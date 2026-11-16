@@ -32,14 +32,14 @@ public:
 	float AttackRange = 240.f;
 
 	UPROPERTY(EditAnywhere, Category = "AI")
-	float ChargeSpeed = 820.f;
+	float ChargeSpeed = 567.f;
 
 	UPROPERTY(EditAnywhere, Category = "AI")
-	float ChargeSeconds = 0.38f;
+	float ChargeSeconds = 0.55f;
 
 	/** Upward speed at the start of the charge: the tackle is a low leap. */
 	UPROPERTY(EditAnywhere, Category = "AI")
-	float ChargeHop = 230.f;
+	float ChargeHop = 270.f;
 
 	/** Centre to centre distance at which the tackle connects. */
 	UPROPERTY(EditAnywhere, Category = "AI")
@@ -57,7 +57,7 @@ public:
 	float RingDriftSpeed = 36.f;
 
 	UPROPERTY(EditAnywhere, Category = "AI")
-	float TelegraphSeconds = 0.5f;
+	float TelegraphSeconds = 0.65f;
 
 	UPROPERTY(EditAnywhere, Category = "AI")
 	float RecoverSeconds = 0.9f;

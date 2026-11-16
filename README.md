@@ -1,5 +1,7 @@
 # PixelRPG
 
+[한국어](README.ko.md)
+
 A 3D pixel-art action RPG prototype in Unreal Engine 5.8: low-poly, vertex-coloured models rendered as pixel art, melee combat built on the Gameplay Ability System, a mage companion, gathering, one quest and save games.
 
 ## Layout
