@@ -1,0 +1,452 @@
+#include "Combat/PixelPlayerCharacter.h"
+
+#include "AbilitySystemComponent.h"
+#include "Combat/PixelAbility_Melee.h"
+#include "Combat/PixelAttributeSet.h"
+#include "Combat/PixelCompanionCharacter.h"
+#include "Combat/PixelGameplayTags.h"
+#include "Components/CapsuleComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/World.h"
+#include "EngineUtils.h"
+#include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
+#include "InputCoreTypes.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "PixelAudio.h"
+#include "PixelCameraRig.h"
+#include "PixelGameMode.h"
+#include "TimerManager.h"
+#include "World/PixelInteractable.h"
+#include "World/PixelInventoryComponent.h"
+#include "World/PixelQuestComponent.h"
+
+APixelPlayerCharacter::APixelPlayerCharacter()
+{
+	TeamId = 0;
+	StartingHealth = BaseHealth;
+	bWeaponInBody = true;
+	HandHeight = 70.f;
+
+	Inventory = CreateDefaultSubobject<UPixelInventoryComponent>(TEXT("Inventory"));
+	Quest = CreateDefaultSubobject<UPixelQuestComponent>(TEXT("Quest"));
+
+	FPixelWeaponDef Sword;
+	Sword.Name = TEXT("Sword");
+	Sword.Damage = 10.f;
+	Sword.Range = 165.f;
+	Sword.ArcDegrees = 140.f;
+	Sword.Windup = 0.08f;
+	Sword.ActiveTime = 0.10f;
+	Sword.Recovery = 0.16f;
+	Sword.Knockback = 420.f;
+	Sword.SlashRoll = -62.f; // overhead chop
+	Sword.Mesh = TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Game/Meshes/SM_Sword.SM_Sword")));
+
+	FPixelWeaponDef Spear;
+	Spear.Name = TEXT("Spear");
+	Spear.Damage = 16.f;
+	Spear.Range = 260.f;
+	Spear.ArcDegrees = 28.f;
+	Spear.Windup = 0.22f;
+	Spear.ActiveTime = 0.10f;
+	Spear.Recovery = 0.34f;
+	Spear.Knockback = 650.f;
+	Spear.bThrust = true;
+	Spear.Mesh = TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Game/Meshes/SM_Spear.SM_Spear")));
+
+	Weapons = { Sword, Spear };
+
+	FPixelWeaponDef Slash = Sword;      // level, right to left: wide
+	Slash.ArcDegrees = 175.f;
+	Slash.SlashRoll = -14.f;
+	FPixelWeaponDef Backhand = Slash;   // and back again
+	Backhand.SlashRoll = 14.f;
+	FPixelWeaponDef Rising = Sword;     // narrow, hits harder and throws further
+	Rising.Damage = 13.f;
+	Rising.ArcDegrees = 90.f;
+	Rising.Windup = 0.10f;
+	Rising.Knockback = 520.f;
+	Rising.SlashRoll = 62.f;
+	FPixelWeaponDef Stab = Sword;       // the finisher: long, thin, slow to recover
+	Stab.Damage = 18.f;
+	Stab.Range = 215.f;
+	Stab.ArcDegrees = 36.f;
+	Stab.Windup = 0.12f;
+	Stab.Recovery = 0.26f;
+	Stab.Knockback = 700.f;
+	Stab.bThrust = true;
+	Stab.SlashRoll = 0.f;
+	SwordCombo = { Slash, Backhand, Rising, Stab };
+	Weapon = Sword;
+}
+
+void APixelPlayerCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+
+	LoadPoses(TEXT("SM_Hero"), 22 + SwordCombo.Num() * 3);
+	AbilitySystem->GiveAbility(FGameplayAbilitySpec(UPixelAbility_Dodge::StaticClass(), 1));
+	SpawnLocation = GetActorLocation();
+
+	FActorSpawnParameters Params;
+	Params.Owner = this;
+	CameraRig = GetWorld()->SpawnActor<APixelCameraRig>(APixelCameraRig::StaticClass(), GetActorTransform(), Params);
+	CameraRig->SetTarget(this);
+	FaceDirection(FRotator(0.f, CameraRig->GetViewYaw(), 0.f).Vector(), true); // start facing away from the camera
+
+	Companion = GetWorld()->SpawnActor<APixelCompanionCharacter>(APixelCompanionCharacter::StaticClass(), GetActorTransform(), Params);
+	Companion->SetPartner(this);
+	Companion->Mount();
+
+	if (APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		// Capture the mouse for camera look.
+		PC->SetInputMode(FInputModeGameOnly());
+		PC->bShowMouseCursor = false;
+	}
+}
+
+int32 APixelPlayerCharacter::GetPoseIndex() const
+{
+	// Poses per weapon (see hero_rows in Tools/make_assets_blender.py):
+	// 0-1 idle, 2-5 walk, 6-8 attack, 9 dodge, 10 hurt.
+	// After both weapons come the other attacks of the sword combo, three poses each.
+	const int32 Base = WeaponIndex * 11;
+	if (IsDead() || IsHurt())
+	{
+		return Base + 10;
+	}
+	if (HasStateTag(PixelTags::State_Dodging))
+	{
+		return Base + 9;
+	}
+	const int32 Attack = GetAttackPhase();
+	if (Attack >= 0)
+	{
+		return ComboStep > 0 ? Weapons.Num() * 11 + (ComboStep - 1) * 3 + Attack : Base + 6 + Attack;
+	}
+	return GetWalkTime() > 0.f ? Base + 2 + static_cast<int32>(GetWalkTime() * 9.f) % 4
+		: Base + static_cast<int32>(GetAnimTime() * 1.6f) % 2;
+}
+
+void APixelPlayerCharacter::SwapWeapon()
+{
+	if (Weapons.Num() > 0 && !HasStateTag(PixelTags::State_Attacking))
+	{
+		WeaponIndex = (WeaponIndex + 1) % Weapons.Num();
+		SetWeapon(Weapons[WeaponIndex]);
+		ComboStep = 0;
+		ComboUntil = -100.f;
+		UPixelAudioSubsystem::Play(this, EPixelSound::WeaponSwap);
+	}
+}
+
+void APixelPlayerCharacter::StartAttack()
+{
+	if (!Weapons.IsValidIndex(WeaponIndex))
+	{
+		TryAttack();
+		return;
+	}
+	// Only the sword (the first weapon) has a combo. The melee ability reads the attack from Weapon.
+	const float Now = GetWorld()->GetTimeSeconds();
+	const int32 Steps = WeaponIndex == 0 ? 1 + SwordCombo.Num() : 1;
+	const int32 Step = Now <= ComboUntil ? (ComboStep + 1) % Steps : 0;
+	const FPixelWeaponDef Previous = Weapon;
+	Weapon = Step > 0 ? SwordCombo[Step - 1] : Weapons[WeaponIndex];
+	if (!TryAttack())
+	{
+		Weapon = Previous;
+		return;
+	}
+	ComboStep = Step;
+	ComboUntil = Now + Weapon.TotalTime() + ComboWindow;
+	if (Weapon.bThrust && Step > 0)
+	{
+		StartDash(GetFacingDirection(), 480.f, Weapon.Windup + 0.04f); // step into the stab
+	}
+}
+
+APixelCharacterBase* APixelPlayerCharacter::FindNearestEnemy(float MaxDistance) const
+{
+	APixelCharacterBase* Best = nullptr;
+	float BestDistSq = FMath::Square(MaxDistance);
+	for (TActorIterator<APixelCharacterBase> It(GetWorld()); It; ++It)
+	{
+		if (It->TeamId != TeamId && !It->IsDead())
+		{
+			const float DistSq = FVector::DistSquared2D(It->GetActorLocation(), GetActorLocation());
+			if (DistSq < BestDistSq)
+			{
+				BestDistSq = DistSq;
+				Best = *It;
+			}
+		}
+	}
+	return Best;
+}
+
+APixelInteractable* APixelPlayerCharacter::FindFocus() const
+{
+	APixelInteractable* Best = nullptr;
+	float BestDistSq = TNumericLimits<float>::Max();
+	for (TActorIterator<APixelInteractable> It(GetWorld()); It; ++It)
+	{
+		const float DistSq = FVector::DistSquared2D(It->GetActorLocation(), GetActorLocation());
+		if (DistSq < FMath::Square(It->InteractRange) && DistSq < BestDistSq && It->CanInteract(this))
+		{
+			BestDistSq = DistSq;
+			Best = *It;
+		}
+	}
+	return Best;
+}
+
+APixelInteractable* APixelPlayerCharacter::FindQuestTestGoal() const
+{
+	const bool bWantNpc = Quest->GetState() == EPixelQuestState::NotStarted || Quest->IsReadyToTurnIn();
+	const bool bWantHerb = Quest->GetState() == EPixelQuestState::Active && Quest->GetHerbs() < Quest->HerbsNeeded;
+	APixelInteractable* Best = nullptr;
+	float BestDistSq = TNumericLimits<float>::Max();
+	for (TActorIterator<APixelInteractable> It(GetWorld()); It; ++It)
+	{
+		const APixelGatherable* Gatherable = Cast<APixelGatherable>(*It);
+		const bool bWanted = Gatherable ? (bWantHerb && Gatherable->GetItemId() == UPixelQuestComponent::HerbItem && !Gatherable->IsDepleted())
+			: (bWantNpc && It->IsA<APixelNpc>());
+		const float DistSq = FVector::DistSquared2D(It->GetActorLocation(), GetActorLocation());
+		if (bWanted && DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			Best = *It;
+		}
+	}
+	return Best;
+}
+
+void APixelPlayerCharacter::ShowNotice(const FString& Text, float Seconds)
+{
+	NoticeText = Text;
+	NoticeUntil = GetWorld()->GetTimeSeconds() + Seconds;
+}
+
+void APixelPlayerCharacter::ShowDialogue(const FString& Speaker, const FString& Text, float Seconds)
+{
+	DialogueSpeaker = Speaker;
+	DialogueText = Text;
+	DialogueUntil = GetWorld()->GetTimeSeconds() + Seconds;
+	UE_LOG(LogTemp, Display, TEXT("PixelWorld: %s says: %s"), *Speaker, *Text.Replace(TEXT("\n"), TEXT(" ")));
+}
+
+bool APixelPlayerCharacter::GetNotice(FString& OutText) const
+{
+	OutText = NoticeText;
+	return GetWorld()->GetTimeSeconds() < NoticeUntil;
+}
+
+bool APixelPlayerCharacter::GetDialogue(FString& OutSpeaker, FString& OutText) const
+{
+	OutSpeaker = DialogueSpeaker;
+	OutText = DialogueText;
+	return GetWorld()->GetTimeSeconds() < DialogueUntil;
+}
+
+void APixelPlayerCharacter::ApplyQuestBonus(bool bHeal)
+{
+	const float Health = GetHealth();
+	StartingHealth = BaseHealth + (Quest->IsCompleted() ? 25.f : 0.f); // also what a respawn restores
+	Attributes->SetMaxHealth(StartingHealth);
+	Attributes->SetHealth(bHeal ? StartingHealth : FMath::Min(Health, StartingHealth));
+}
+
+void APixelPlayerCharacter::RestoreFromSave(const FVector& Location, float Health, int32 SavedWeaponIndex)
+{
+	SetActorLocation(Location + FVector(0.f, 0.f, 10.f), false, nullptr, ETeleportType::TeleportPhysics);
+	ApplyQuestBonus(true);
+	Attributes->SetHealth(FMath::Clamp(Health, 1.f, StartingHealth));
+	if (Weapons.IsValidIndex(SavedWeaponIndex))
+	{
+		WeaponIndex = SavedWeaponIndex;
+		SetWeapon(Weapons[WeaponIndex]);
+		ComboStep = 0;
+	}
+}
+
+void APixelPlayerCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	if (IsDead() || !CameraRig)
+	{
+		Focus = nullptr;
+		return;
+	}
+	Focus = FindFocus();
+
+	FVector2D MoveInput = FVector2D::ZeroVector;
+	bool bAttack = false;
+	bool bDodge = false;
+
+	if (const APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		MoveInput.X = (PC->IsInputKeyDown(EKeys::W) ? 1.f : 0.f) - (PC->IsInputKeyDown(EKeys::S) ? 1.f : 0.f);
+		MoveInput.Y = (PC->IsInputKeyDown(EKeys::D) ? 1.f : 0.f) - (PC->IsInputKeyDown(EKeys::A) ? 1.f : 0.f);
+		bAttack = PC->IsInputKeyDown(EKeys::LeftMouseButton) || PC->IsInputKeyDown(EKeys::J);
+		bDodge = PC->WasInputKeyJustPressed(EKeys::SpaceBar);
+
+		if (PC->WasInputKeyJustPressed(EKeys::Tab) || PC->WasInputKeyJustPressed(EKeys::R)) { SwapWeapon(); }
+		float MouseX = 0.f, MouseY = 0.f;
+		PC->GetInputMouseDelta(MouseX, MouseY);
+		CameraRig->AddLookInput(MouseX * MouseSensitivity, MouseY * MouseSensitivity);
+		if (PC->WasInputKeyJustPressed(EKeys::V)) { CameraRig->ToggleViewMode(); }
+
+		if (Companion)
+		{
+			if (PC->WasInputKeyJustPressed(EKeys::G)) { Companion->ToggleMount(); }
+			if (PC->WasInputKeyJustPressed(EKeys::One)) { Companion->SetOrder(EPixelCompanionOrder::Follow); }
+			if (PC->WasInputKeyJustPressed(EKeys::Two)) { Companion->SetOrder(EPixelCompanionOrder::Hold); }
+			if (PC->WasInputKeyJustPressed(EKeys::Three)) { Companion->SetOrder(EPixelCompanionOrder::Focus); }
+			if (PC->WasInputKeyJustPressed(EKeys::T)) { Companion->SetAutoCast(!Companion->IsAutoCast()); }
+			if (PC->WasInputKeyJustPressed(EKeys::F)) { Companion->CastBolt(FindNearestEnemy(Companion->BoltRange)); }
+			if (PC->WasInputKeyJustPressed(EKeys::C)) { Companion->CastEmpower(); }
+		}
+		if (PC->WasInputKeyJustPressed(EKeys::E) && Focus) { Focus->Interact(this); }
+		if (APixelGameMode* GameMode = GetWorld()->GetAuthGameMode<APixelGameMode>())
+		{
+			if (PC->WasInputKeyJustPressed(EKeys::F5) && GameMode->SaveGame(TEXT("manual")))
+			{
+				ShowNotice(TEXT("Game saved"));
+				UPixelAudioSubsystem::Play(this, EPixelSound::Save);
+			}
+			if (PC->WasInputKeyJustPressed(EKeys::F9))
+			{
+				ShowNotice(GameMode->LoadGame() ? TEXT("Game loaded") : TEXT("No save to load"));
+				UPixelAudioSubsystem::Play(this, EPixelSound::Load);
+			}
+		}
+		if (PC->WasInputKeyJustPressed(EKeys::Left)) { CameraRig->RotateView(1); }
+		if (PC->WasInputKeyJustPressed(EKeys::Right)) { CameraRig->RotateView(-1); }
+		if (PC->WasInputKeyJustPressed(EKeys::F1)) { CameraRig->TogglePixelEffect(); }
+		CameraRig->AddZoomInput((PC->IsInputKeyDown(EKeys::X) ? 1.f : 0.f) - (PC->IsInputKeyDown(EKeys::Z) ? 1.f : 0.f), DeltaSeconds);
+	}
+
+	FVector MoveDir = FRotator(0.f, CameraRig->GetViewYaw(), 0.f).RotateVector(FVector(MoveInput.X, MoveInput.Y, 0.f)).GetSafeNormal();
+
+	// Automated check ("-PixelCombatTest"): walk to the nearest enemy, attack it, swap weapons now and then.
+	// "-PixelQuestTest" does the same but also takes the quest, gathers for it and hands it in.
+	static const bool bQuestTest = FParse::Param(FCommandLine::Get(), TEXT("PixelQuestTest"));
+	static const bool bAutoPlay = bQuestTest || FParse::Param(FCommandLine::Get(), TEXT("PixelCombatTest"));
+	if (bAutoPlay)
+	{
+		const APixelCharacterBase* Enemy = FindNearestEnemy(5000.f);
+		APixelInteractable* Goal = bQuestTest ? FindQuestTestGoal() : nullptr;
+		const bool bEnemyInTheWay = Enemy && FVector::Dist2D(Enemy->GetActorLocation(), GetActorLocation()) < 320.f;
+		if (Goal && !bEnemyInTheWay)
+		{
+			const FVector ToGoal = (Goal->GetActorLocation() - GetActorLocation()) * FVector(1.f, 1.f, 0.f);
+			// Turn the camera towards the goal, so the screenshot shows what is being used.
+			const float YawError = FMath::FindDeltaAngleDegrees(CameraRig->GetViewYaw(), ToGoal.Rotation().Yaw);
+			CameraRig->AddLookInput(FMath::Clamp(YawError, -240.f * DeltaSeconds, 240.f * DeltaSeconds), 0.f);
+			if (ToGoal.Size() < Goal->InteractRange * 0.7f)
+			{
+				Goal->Interact(this);
+				MoveDir = FVector::ZeroVector;
+			}
+			else
+			{
+				MoveDir = ToGoal.GetSafeNormal();
+			}
+		}
+		else if (Enemy)
+		{
+			const FVector ToEnemy = (Enemy->GetActorLocation() - GetActorLocation()) * FVector(1.f, 1.f, 0.f);
+			bAttack = ToEnemy.Size() < Weapon.Range * 0.85f;
+			MoveDir = bAttack ? FVector::ZeroVector : ToEnemy.GetSafeNormal();
+		}
+		// Exercise the companion: ride for 8 s, fight on the ground until 18 s, then call it back.
+		const float Now = GetWorld()->GetTimeSeconds();
+		if (Companion && !Companion->IsDowned() && Companion->IsMounted() == (Now > 8.f && Now < 18.f))
+		{
+			Companion->ToggleMount();
+		}
+		if (static_cast<int32>(GetWorld()->GetTimeSeconds() / 5.f) % Weapons.Num() != WeaponIndex)
+		{
+			SwapWeapon();
+		}
+	}
+
+	const bool bAttacking = HasStateTag(PixelTags::State_Attacking);
+	const bool bDodging = HasStateTag(PixelTags::State_Dodging);
+
+	if (!MoveDir.IsNearlyZero() && !bDodging)
+	{
+		// Committed to the swing: slow down and keep the facing while attacking.
+		AddMovementInput(MoveDir, bAttacking ? 0.25f : 1.f);
+		if (!bAttacking)
+		{
+			FaceDirection(MoveDir);
+		}
+	}
+
+	if (bDodge && !bDodging && GetWorld()->GetTimeSeconds() - LastDodgeTime >= DodgeCooldown)
+	{
+		if (!MoveDir.IsNearlyZero())
+		{
+			FaceDirection(MoveDir, true);
+		}
+		if (AbilitySystem->TryActivateAbilityByClass(UPixelAbility_Dodge::StaticClass()))
+		{
+			LastDodgeTime = GetWorld()->GetTimeSeconds();
+			UPixelAudioSubsystem::Play(this, EPixelSound::Dodge);
+		}
+	}
+
+	if (bAttack && !bAttacking && !bDodging)
+	{
+		// Soft lock: turn to the closest enemy that is roughly in reach.
+		if (const APixelCharacterBase* Enemy = FindNearestEnemy(Weapon.Range * 1.6f))
+		{
+			FaceDirection(Enemy->GetActorLocation() - GetActorLocation(), true);
+		}
+		StartAttack();
+	}
+}
+
+void APixelPlayerCharacter::HandleDamaged(float Amount, AActor* DamageInstigator)
+{
+	Super::HandleDamaged(Amount, DamageInstigator);
+	UE_LOG(LogTemp, Display, TEXT("PixelCombat: player took %.0f damage, health %.0f/%.0f"), Amount, GetHealth(), GetMaxHealth());
+	UPixelAudioSubsystem::Play(this, EPixelSound::PlayerHurt);
+	if (CameraRig)
+	{
+		CameraRig->Shake(3.f);
+	}
+}
+
+void APixelPlayerCharacter::NotifyHitLanded(int32 TargetCount)
+{
+	if (CameraRig)
+	{
+		CameraRig->Shake(2.f);
+	}
+}
+
+void APixelPlayerCharacter::HandleDeath(AActor* Killer)
+{
+	Super::HandleDeath(Killer);
+	UE_LOG(LogTemp, Display, TEXT("PixelCombat: player died"));
+	UPixelAudioSubsystem::Play(this, EPixelSound::PlayerDeath);
+	GetWorldTimerManager().SetTimer(RespawnTimer, this, &APixelPlayerCharacter::Respawn, RespawnSeconds, false);
+}
+
+void APixelPlayerCharacter::Respawn()
+{
+	// Undo APixelCharacterBase::HandleDeath and start over at the spawn point.
+	AbilitySystem->SetLooseGameplayTagCount(PixelTags::State_Dead, 0);
+	ResetHealth();
+	SetActorLocation(SpawnLocation);
+	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+	ClearDeathVisual();
+}
