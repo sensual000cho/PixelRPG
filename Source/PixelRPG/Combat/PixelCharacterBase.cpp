@@ -10,9 +10,9 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
-#include "Misc/Paths.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Misc/Paths.h"
 #include "TimerManager.h"
 
 namespace
@@ -357,5 +357,5 @@ void APixelCharacterBase::UpdateVisuals(float DeltaSeconds)
 	}
 	WeaponMesh->SetRelativeScale3D(FVector(DeathScale));
 	WeaponMesh->SetVisibility(!bWeaponInBody);
-	SlashMesh->SetVisibility(bShowSlash && !SlashMesh->GetStaticMesh() ? false : bShowSlash);
+	SlashMesh->SetVisibility(bShowSlash && SlashMesh->GetStaticMesh() != nullptr);
 }

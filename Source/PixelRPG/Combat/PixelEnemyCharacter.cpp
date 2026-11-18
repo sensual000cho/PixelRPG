@@ -14,6 +14,8 @@ APixelEnemyCharacter::APixelEnemyCharacter()
 {
 	TeamId = 1;
 	StartingHealth = 30.f;
+	// Kill objectives ask for an enemy kind by actor tag ("Slime" for the garden quest). Subclasses replace it with their own.
+	Tags.Add(TEXT("Slime"));
 	StunOnHitSeconds = 0.35f;
 	HandHeight = 30.f;
 	GetCharacterMovement()->MaxWalkSpeed = 230.f;

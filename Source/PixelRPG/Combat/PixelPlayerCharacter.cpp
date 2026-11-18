@@ -168,6 +168,35 @@ bool APixelPlayerCharacter::SwapWeapon()
 	return false;
 }
 
+void APixelPlayerCharacter::ExplainLockedWeapon()
+{
+	// Tab did nothing: say why, if a weapon is waiting on a quest (and not just because an attack is under way).
+	if (HasStateTag(PixelTags::State_Attacking))
+	{
+		return;
+	}
+	for (int32 Index = 0; Index < Weapons.Num(); ++Index)
+	{
+		if (IsWeaponAvailable(Index))
+		{
+			continue;
+		}
+		const FName Name(*Weapons[Index].Name);
+		for (const FPixelQuestDef& Def : PixelQuestCatalog::GetQuests())
+		{
+			if (Def.Reward.UnlockWeapon == Name)
+			{
+				const FPixelNpcDef* Npc = PixelQuestCatalog::FindNpc(Def.Giver);
+				ShowNotice(FString::Printf(TEXT("%s: 아직 없음 - %s의 의뢰 \"%s\" 보상"), *PixelQuestCatalog::GetItemName(Name),
+					Npc ? *Npc->DisplayName : *Def.Giver.ToString(), *Def.Title), 2.5f);
+				return;
+			}
+		}
+		ShowNotice(FString::Printf(TEXT("%s: 아직 쓸 수 없습니다"), *PixelQuestCatalog::GetItemName(Name)), 2.5f);
+		return;
+	}
+}
+
 void APixelPlayerCharacter::ToggleView()
 {
 	CameraRig->ToggleViewMode();
@@ -429,7 +458,7 @@ void APixelPlayerCharacter::Tick(float DeltaSeconds)
 		bAttack = PC->IsInputKeyDown(EKeys::LeftMouseButton) || PC->IsInputKeyDown(EKeys::J);
 		bDodge = PC->WasInputKeyJustPressed(EKeys::SpaceBar);
 
-		if (PC->WasInputKeyJustPressed(EKeys::Tab) || PC->WasInputKeyJustPressed(EKeys::R)) { SwapWeapon(); }
+		if ((PC->WasInputKeyJustPressed(EKeys::Tab) || PC->WasInputKeyJustPressed(EKeys::R)) && !SwapWeapon()) { ExplainLockedWeapon(); }
 		float MouseX = 0.f, MouseY = 0.f;
 		PC->GetInputMouseDelta(MouseX, MouseY);
 		CameraRig->AddLookInput(MouseX * MouseSensitivity, MouseY * MouseSensitivity);
@@ -455,8 +484,12 @@ void APixelPlayerCharacter::Tick(float DeltaSeconds)
 			}
 			if (PC->WasInputKeyJustPressed(EKeys::F9))
 			{
-				ShowNotice(GameMode->LoadGame() ? TEXT("불러왔습니다") : TEXT("불러올 저장이 없습니다"));
-				UPixelAudioSubsystem::Play(this, EPixelSound::Load);
+				const bool bLoaded = GameMode->LoadGame();
+				ShowNotice(bLoaded ? TEXT("불러왔습니다") : TEXT("불러올 저장이 없습니다"));
+				if (bLoaded)
+				{
+					UPixelAudioSubsystem::Play(this, EPixelSound::Load);
+				}
 			}
 		}
 		if (PC->WasInputKeyJustPressed(EKeys::Left)) { CameraRig->RotateView(1); }
@@ -620,4 +653,5 @@ void APixelPlayerCharacter::Respawn()
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 	ClearDeathVisual();
+	ShowNotice(TEXT("마을에서 다시 일어났다"), 2.5f);
 }

@@ -11,7 +11,7 @@ APixelMushroomEnemy::APixelMushroomEnemy()
 {
 	PosePrefix = TEXT("/Game/Characters/Enemies/Mushroom/SM_Mushroom");
 	PoseCount = 7;
-	Tags.Add(TEXT("Mushroom"));
+	Tags = { TEXT("Mushroom") };   // not a slime: replaces the tag APixelEnemyCharacter gives
 
 	// About 1 m tall and 0.9 m across: a little wider than the default capsule.
 	GetCapsuleComponent()->SetCapsuleRadius(36.f);
@@ -24,7 +24,6 @@ APixelMushroomEnemy::APixelMushroomEnemy()
 	Weapon.Name = TEXT("Charge");
 	AggroRange = 1200.f;
 	TackleRadius = 80.f;
-
 }
 
 void APixelMushroomEnemy::SetMode(EMode NewMode)
@@ -171,7 +170,7 @@ void APixelMushroomEnemy::Tick(float DeltaSeconds)
 		{
 			UE_LOG(LogTemp, Display, TEXT("PixelCombat: mushroom charge hit after %.0f at speed %.0f (damage %.1f)"),
 				ChargeDistance, CurrentSpeed, Weapon.Damage);
-				StartDash(-ChargeDirection, 260.f, 0.18f);   // bounce off
+			StartDash(-ChargeDirection, 260.f, 0.18f);   // bounce off
 			ModeDuration = 0.9f;
 			SetMode(EMode::Turn);
 			break;
@@ -183,7 +182,7 @@ void APixelMushroomEnemy::Tick(float DeltaSeconds)
 		if (StuckTime > 0.12f)
 		{
 			UE_LOG(LogTemp, Display, TEXT("PixelCombat: mushroom ran into something after %.0f"), ChargeDistance);
-				FlashAmount = 0.7f;
+			FlashAmount = 0.7f;
 			UPixelAudioSubsystem::PlayAt(this, EPixelSound::Hit, Here);
 			GetCharacterMovement()->Velocity = FVector::ZeroVector;
 			ModeDuration = BonkSeconds;
@@ -196,7 +195,7 @@ void APixelMushroomEnemy::Tick(float DeltaSeconds)
 		if (bPassed || ChargeDistance > ChargeMaxDistance)
 		{
 			UE_LOG(LogTemp, Display, TEXT("PixelCombat: mushroom missed, braking from speed %.0f after %.0f"), CurrentSpeed, ChargeDistance);
-				SetMode(EMode::Brake);
+			SetMode(EMode::Brake);
 		}
 		break;
 	}

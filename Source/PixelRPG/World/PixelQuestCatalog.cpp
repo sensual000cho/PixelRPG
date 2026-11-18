@@ -85,7 +85,7 @@ namespace
 				"이 강장제 드세요. 그리고 수고비로 50코인이에요.");
 			Q.Objectives = {
 				Objective(EPixelObjective::Collect, TEXT("Moonleaf"), 3, TEXT("월광초 채집")),
-				Objective(EPixelObjective::Kill, nullptr, 3, TEXT("슬라임 처치")),
+				Objective(EPixelObjective::Kill, TEXT("Slime"), 3, TEXT("슬라임 처치")),
 			};
 			Q.Reward.Coins = 50;
 			Q.Reward.MaxHealth = 25.f;

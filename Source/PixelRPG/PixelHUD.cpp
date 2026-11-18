@@ -9,11 +9,20 @@
 #include "Engine/Engine.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "EngineUtils.h"
+#include "GameFramework/PlayerController.h"
+#include "InputCoreTypes.h"
+#include "Misc/ConfigCacheIni.h"
 #include "PixelCameraRig.h"
 #include "PixelGameMode.h"
 #include "World/PixelInteractable.h"
 #include "World/PixelInventoryComponent.h"
 #include "World/PixelQuestComponent.h"
+
+void APixelHUD::BeginPlay()
+{
+	Super::BeginPlay();
+	GConfig->GetBool(TEXT("PixelRPG.Controls"), TEXT("ShowHelp"), bShowHelp, GGameUserSettingsIni);
+}
 
 void APixelHUD::DrawHUD()
 {
@@ -209,17 +218,27 @@ void APixelHUD::DrawHUD()
 		DrawLine(FVector2D(Canvas->ClipX - Margin.X - 60.0, Canvas->ClipY - Margin.Y - 14.0), TEXT("저장됨"), GEngine->GetSmallFont(), FLinearColor(1.f, 1.f, 1.f, 0.8f), false);
 	}
 
-	FCanvasTextItem Help2(FVector2D(Margin.X, Canvas->ClipY - Margin.Y - 30.0),
-		FText::FromString(TEXT("E 상호작용   G 태우기/내리기   1 따라오기   2 대기   3 집중   T 자동 시전   F 볼트   C 강화   F5 저장   F9 불러오기")),
-		GEngine->GetSmallFont(), FLinearColor(1.f, 1.f, 1.f, 0.8f));
-	Help2.EnableShadow(FLinearColor::Black);
-	Canvas->DrawItem(Help2);
-
-	FCanvasTextItem Help(FVector2D(Margin.X, Canvas->ClipY - Margin.Y - 14.0),
-		FText::FromString(TEXT("WASD 이동   마우스 시점   좌클릭/J 공격   Space 구르기   Tab 무기 교체   Z/X 줌   [ / ] 마우스 감도   V 시점 전환")),
-		GEngine->GetSmallFont(), FLinearColor(1.f, 1.f, 1.f, 0.8f));
-	Help.EnableShadow(FLinearColor::Black);
-	Canvas->DrawItem(Help);
+	// Key help, bottom left. H hides it down to a one-line reminder.
+	if (PlayerOwner && PlayerOwner->WasInputKeyJustPressed(EKeys::H))
+	{
+		bShowHelp = !bShowHelp;
+		GConfig->SetBool(TEXT("PixelRPG.Controls"), TEXT("ShowHelp"), bShowHelp, GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
+	const FLinearColor HelpColor(1.f, 1.f, 1.f, 0.8f);
+	if (bShowHelp)
+	{
+		DrawLine(FVector2D(Margin.X, Canvas->ClipY - Margin.Y - 30.0),
+			TEXT("E 상호작용   G 태우기/내리기   1 따라오기   2 대기   3 집중   T 자동 시전   F 볼트   C 강화   F5 저장   F9 불러오기"),
+			GEngine->GetSmallFont(), HelpColor, false);
+		DrawLine(FVector2D(Margin.X, Canvas->ClipY - Margin.Y - 14.0),
+			TEXT("WASD 이동   마우스 시점   좌클릭/J 공격   Space 구르기   Tab 무기 교체   Z/X 줌   [ / ] 마우스 감도   V 시점 전환   H 도움말 숨기기"),
+			GEngine->GetSmallFont(), HelpColor, false);
+	}
+	else
+	{
+		DrawLine(FVector2D(Margin.X, Canvas->ClipY - Margin.Y - 14.0), TEXT("H 조작법 보기"), GEngine->GetSmallFont(), HelpColor, false);
+	}
 
 	if (Player->IsDead())
 	{

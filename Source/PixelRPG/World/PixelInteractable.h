@@ -19,8 +19,8 @@ public:
 	APixelInteractable();
 
 	virtual bool CanInteract(const APixelPlayerCharacter* Player) const { return true; }
-	/** Shown next to the key hint, e.g. "Gather Moonleaf". */
-	virtual FString GetPrompt(const APixelPlayerCharacter* Player) const { return TEXT("Interact"); }
+	/** Shown next to the key hint, e.g. "월광초 채집". */
+	virtual FString GetPrompt(const APixelPlayerCharacter* Player) const { return TEXT("상호작용"); }
 	/** Short text floated above the actor ("!" for a quest), or empty. */
 	virtual FString GetMarker(const APixelPlayerCharacter* Player) const { return FString(); }
 	virtual void Interact(APixelPlayerCharacter* Player) {}

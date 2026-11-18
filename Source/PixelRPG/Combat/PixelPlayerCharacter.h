@@ -88,6 +88,8 @@ protected:
 private:
 	/** Switches to the next available weapon. False if there is no other one. */
 	bool SwapWeapon();
+	/** After a Tab that did nothing: tells the player which quest unlocks the locked weapon. */
+	void ExplainLockedWeapon();
 	// The input actions that quests can ask for: each does the thing and tells the quest log when it worked.
 	void ToggleView();
 	void ToggleCompanionMount();

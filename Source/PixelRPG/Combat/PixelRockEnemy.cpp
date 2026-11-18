@@ -39,7 +39,7 @@ APixelRockEnemy::APixelRockEnemy()
 {
 	PosePrefix = TEXT("/Game/Characters/Enemies/RockMonster/SM_RockMonster");
 	PoseCount = 7;
-	Tags.Add(TEXT("Rock"));
+	Tags = { TEXT("Rock") };   // not a slime: replaces the tag APixelEnemyCharacter gives
 
 	// About 1 m tall and 0.8 m across.
 	GetCapsuleComponent()->SetCapsuleRadius(38.f);
