@@ -2,8 +2,6 @@
 
 #include "Combat/PixelEnemyCharacter.h"
 #include "Combat/PixelPlayerCharacter.h"
-#include "Components/StaticMeshComponent.h"
-#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
@@ -15,6 +13,7 @@
 #include "TimerManager.h"
 #include "World/PixelInteractable.h"
 #include "World/PixelInventoryComponent.h"
+#include "World/PixelQuestActors.h"
 #include "World/PixelQuestComponent.h"
 #include "World/PixelSaveGame.h"
 
@@ -22,6 +21,7 @@ APixelGameMode::APixelGameMode()
 {
 	DefaultPawnClass = APixelPlayerCharacter::StaticClass();
 	HUDClass = APixelHUD::StaticClass();
+	QuestLockedWeapons = { TEXT("Spear") };   // Smith Hilda's reward (Smithing quest)
 }
 
 void APixelGameMode::BeginPlay()
@@ -29,7 +29,7 @@ void APixelGameMode::BeginPlay()
 	Super::BeginPlay();
 
 	FParse::Value(FCommandLine::Get(), TEXT("PixelSaveSlot="), SaveSlot);
-	SpawnWorldObjects();
+	LogWorldObjects();
 
 	GetWorldTimerManager().SetTimer(SpawnTimer, this, &APixelGameMode::SpawnEnemies, SpawnInterval, true, 1.f);
 	GetWorldTimerManager().SetTimer(AutosaveTimer, this, &APixelGameMode::Autosave, AutosaveInterval, true);
@@ -49,7 +49,7 @@ void APixelGameMode::NotifyEnemyKilled(APixelEnemyCharacter* Enemy)
 	UE_LOG(LogTemp, Display, TEXT("PixelCombat: enemy killed (total %d)"), KillCount);
 	if (const APixelPlayerCharacter* Player = GetPlayer())
 	{
-		Player->GetQuest()->NotifyEnemyKilled();
+		Player->GetQuest()->NotifyEnemyKilled(Enemy);
 	}
 }
 
@@ -75,55 +75,19 @@ bool APixelGameMode::FindGround(const FVector2D& Point, FVector& OutLocation) co
 	return false;
 }
 
-void APixelGameMode::SpawnWorldObjects()
+void APixelGameMode::LogWorldObjects() const
 {
-	// Same coordinates as the cleared spots in Tools/setup_pixel_assets.py (build_level).
-	FVector Ground;
-	if (FindGround(FVector2D(300.f, -300.f), Ground))
+	int32 Npcs = 0, Nodes = 0, Markers = 0, Spawners = 0, Dummies = 0;
+	for (TActorIterator<AActor> It(GetWorld()); It; ++It)
 	{
-		// Standing in front of the house, looking at the start of the path.
-		GetWorld()->SpawnActor<APixelNpc>(APixelNpc::StaticClass(), Ground, FRotator(0.f, 135.f, 0.f));
+		Npcs += It->IsA<APixelNpc>();
+		Nodes += It->IsA<APixelGatherable>();
+		Markers += It->IsA<APixelQuestMarker>();
+		Spawners += It->IsA<APixelEnemySpawner>();
+		Dummies += It->IsA<APixelTrainingDummy>();
 	}
-
-	struct FNode
-	{
-		const TCHAR* Id;
-		const TCHAR* Item;
-		const TCHAR* Mesh;
-		float Scale;
-		FVector2D Point;
-	};
-	const TCHAR* HerbMesh = TEXT("/Game/Meshes/SM_Herb.SM_Herb");
-	const TCHAR* OreMesh = TEXT("/Game/Meshes/SM_Ore.SM_Ore");
-	const FNode Nodes[] = {
-		{ TEXT("Herb0"), TEXT("Moonleaf"), HerbMesh, 1.5f, FVector2D(-260.f, -320.f) },
-		{ TEXT("Herb1"), TEXT("Moonleaf"), HerbMesh, 1.3f, FVector2D(220.f, 400.f) },
-		{ TEXT("Herb2"), TEXT("Moonleaf"), HerbMesh, 1.6f, FVector2D(-720.f, -160.f) },
-		{ TEXT("Herb3"), TEXT("Moonleaf"), HerbMesh, 1.4f, FVector2D(480.f, 260.f) },
-		{ TEXT("Herb4"), TEXT("Moonleaf"), HerbMesh, 1.5f, FVector2D(-160.f, 720.f) },
-		{ TEXT("Herb5"), TEXT("Moonleaf"), HerbMesh, 1.3f, FVector2D(920.f, 220.f) },
-		{ TEXT("Herb6"), TEXT("Moonleaf"), HerbMesh, 1.6f, FVector2D(-900.f, 500.f) },
-		{ TEXT("Herb7"), TEXT("Moonleaf"), HerbMesh, 1.4f, FVector2D(300.f, 1100.f) },
-		{ TEXT("Ore0"), TEXT("Copper Ore"), OreMesh, 1.0f, FVector2D(-380.f, 250.f) },
-		{ TEXT("Ore1"), TEXT("Copper Ore"), OreMesh, 1.2f, FVector2D(-700.f, 560.f) },
-		{ TEXT("Ore2"), TEXT("Copper Ore"), OreMesh, 1.1f, FVector2D(1150.f, -250.f) },
-		{ TEXT("Ore3"), TEXT("Copper Ore"), OreMesh, 1.3f, FVector2D(-1100.f, -500.f) },
-	};
-	int32 Placed = 0;
-	for (const FNode& Node : Nodes)
-	{
-		if (!FindGround(Node.Point, Ground))
-		{
-			continue;
-		}
-		const FRotator Rotation(0.f, FMath::Fmod(Node.Point.X * 0.37f + Node.Point.Y * 0.11f, 360.f), 0.f);
-		if (APixelGatherable* Gatherable = GetWorld()->SpawnActor<APixelGatherable>(APixelGatherable::StaticClass(), Ground, Rotation))
-		{
-			Gatherable->Configure(Node.Id, Node.Item, Node.Mesh, Node.Scale);
-			++Placed;
-		}
-	}
-	UE_LOG(LogTemp, Display, TEXT("PixelWorld: placed %d of %d gathering nodes"), Placed, static_cast<int32>(UE_ARRAY_COUNT(Nodes)));
+	UE_LOG(LogTemp, Display, TEXT("PixelWorld: map has %d NPCs, %d gathering nodes, %d markers, %d spawners, %d dummies"),
+		Npcs, Nodes, Markers, Spawners, Dummies);
 }
 
 void APixelGameMode::SpawnEnemies()
@@ -194,8 +158,7 @@ bool APixelGameMode::SaveGame(const TCHAR* Reason)
 	Save->PlayerHealth = Player->GetHealth();
 	Save->WeaponIndex = Player->GetWeaponIndex();
 	Save->Items = Player->GetInventory()->GetItems();
-	Save->QuestState = static_cast<uint8>(Player->GetQuest()->GetState());
-	Save->QuestKills = Player->GetQuest()->GetKills();
+	Save->Quests = Player->GetQuest()->GetRecords();
 	Save->KillCount = KillCount;
 	for (TActorIterator<APixelGatherable> It(GetWorld()); It; ++It)
 	{
@@ -211,8 +174,8 @@ bool APixelGameMode::SaveGame(const TCHAR* Reason)
 		return false;
 	}
 	LastSaveTime = GetWorld()->GetTimeSeconds();
-	UE_LOG(LogTemp, Display, TEXT("PixelSave: saved (%s) quest %d kills %d items %d depleted %d"), Reason,
-		Save->QuestState, Save->QuestKills, Save->Items.Num(), Save->DepletedNodes.Num());
+	UE_LOG(LogTemp, Display, TEXT("PixelSave: saved (%s) quests %d items %d depleted %d"), Reason,
+		Save->Quests.Num(), Save->Items.Num(), Save->DepletedNodes.Num());
 	return true;
 }
 
@@ -227,7 +190,16 @@ bool APixelGameMode::LoadGame()
 
 	KillCount = Save->KillCount;
 	Player->GetInventory()->SetItems(Save->Items);
-	Player->GetQuest()->Restore(static_cast<EPixelQuestState>(FMath::Min<uint8>(Save->QuestState, static_cast<uint8>(EPixelQuestState::Completed))), Save->QuestKills);
+	TArray<FPixelQuestRecord> Quests = Save->Quests;
+	if (Save->Version < 2 && Save->QuestState > 0)
+	{
+		// Version 1 knew only the garden quest: its state and slime count.
+		FPixelQuestRecord& Garden = Quests.AddDefaulted_GetRef();
+		Garden.Id = TEXT("Garden");
+		Garden.State = Save->QuestState;
+		Garden.Progress = { 0, Save->QuestKills };
+	}
+	Player->GetQuest()->RestoreRecords(Quests);
 	Player->RestoreFromSave(Save->PlayerLocation, Save->PlayerHealth, Save->WeaponIndex);
 
 	for (TActorIterator<APixelGatherable> It(GetWorld()); It; ++It)
@@ -240,7 +212,12 @@ bool APixelGameMode::LoadGame()
 	{
 		Items += FString::Printf(TEXT(" %s=%d"), *Item.Key.ToString(), Item.Value);
 	}
-	UE_LOG(LogTemp, Display, TEXT("PixelSave: loaded slot %s: quest %d kills %d, total kills %d, max health %.0f, at %s, items:%s"), *SaveSlot,
-		Save->QuestState, Save->QuestKills, KillCount, Player->GetMaxHealth(), *Save->PlayerLocation.ToCompactString(), *Items);
+	FString QuestText;
+	for (const FPixelQuestRecord& Record : Quests)
+	{
+		QuestText += FString::Printf(TEXT(" %s=%d"), *Record.Id.ToString(), Record.State);
+	}
+	UE_LOG(LogTemp, Display, TEXT("PixelSave: loaded slot %s: quests:%s, total kills %d, max health %.0f, at %s, items:%s"), *SaveSlot,
+		*QuestText, KillCount, Player->GetMaxHealth(), *Save->PlayerLocation.ToCompactString(), *Items);
 	return true;
 }

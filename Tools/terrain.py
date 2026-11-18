@@ -5,12 +5,15 @@ All values are in Unreal units (cm).
 """
 import math
 
-SIZE = 16000.0      # the ground covers [-SIZE/2, SIZE/2] on both axes
+# The valley was 16000 across; SCALE stretches it (2 = four times the area). The clearing at the start keeps its size,
+# the road, the hills and the rim of high ground move out with it.
+SCALE = 2.0
+SIZE = 16000.0 * SCALE   # the ground covers [-SIZE/2, SIZE/2] on both axes
 STEP = 100.0        # spacing of the samples of the colour map
 
 # The landscape: COMPONENTS x COMPONENTS components of QUADS x QUADS quads each.
 QUADS = 63
-COMPONENTS = 4
+COMPONENTS = int(4 * SCALE)
 SAMPLES = QUADS * COMPONENTS + 1        # height samples along one side
 SPACING = SIZE / (SAMPLES - 1)          # world units between two height samples
 
@@ -31,7 +34,7 @@ def path_center(x):
 
 def path_weight(x, y):
     """1 on the road, 0 away from it."""
-    if abs(x) > 6200.0:
+    if abs(x) > 6200.0 * SCALE:
         return 0.0
     return 1.0 - _smooth(90.0, 210.0, abs(y - path_center(x)))
 
@@ -41,9 +44,11 @@ def height(x, y):
     hills = (150.0 * math.sin(x / 1400.0 + 0.5) * math.cos(y / 1100.0)
              + 80.0 * math.sin((x + y) / 620.0)
              + 35.0 * math.sin(x / 260.0) * math.sin(y / 310.0))
+    # Broad rises and dips out in the larger valley, so it is not one even field of small hills.
+    hills += 220.0 * math.sin(x / 3600.0 + 1.3) * math.sin(y / 3100.0 - 0.4) * _smooth(4000.0, 8000.0, r)
     # Flat clearing around the start, rolling hills beyond, a rim of high ground at the edge.
     h = hills * _smooth(350.0, 1600.0, r)
-    rim = _smooth(5200.0, 7800.0, r)
+    rim = _smooth(5200.0 * SCALE, 7800.0 * SCALE, r)
     h += 1900.0 * rim * rim
     # The road is worn a little into the ground.
     h -= 18.0 * path_weight(x, y)

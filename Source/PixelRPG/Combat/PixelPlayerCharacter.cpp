@@ -13,6 +13,7 @@
 #include "GameFramework/PlayerController.h"
 #include "InputCoreTypes.h"
 #include "Misc/CommandLine.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/Parse.h"
 #include "PixelAudio.h"
 #include "PixelCameraRig.h"
@@ -20,6 +21,7 @@
 #include "TimerManager.h"
 #include "World/PixelInteractable.h"
 #include "World/PixelInventoryComponent.h"
+#include "World/PixelQuestActors.h"
 #include "World/PixelQuestComponent.h"
 
 APixelPlayerCharacter::APixelPlayerCharacter()
@@ -42,7 +44,7 @@ APixelPlayerCharacter::APixelPlayerCharacter()
 	Sword.Recovery = 0.16f;
 	Sword.Knockback = 420.f;
 	Sword.SlashRoll = -62.f; // overhead chop
-	Sword.Mesh = TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Game/Meshes/SM_Sword.SM_Sword")));
+	Sword.Mesh = TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Game/Weapons/SM_Sword.SM_Sword")));
 
 	FPixelWeaponDef Spear;
 	Spear.Name = TEXT("Spear");
@@ -54,7 +56,7 @@ APixelPlayerCharacter::APixelPlayerCharacter()
 	Spear.Recovery = 0.34f;
 	Spear.Knockback = 650.f;
 	Spear.bThrust = true;
-	Spear.Mesh = TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Game/Meshes/SM_Spear.SM_Spear")));
+	Spear.Mesh = TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(TEXT("/Game/Weapons/SM_Spear.SM_Spear")));
 
 	Weapons = { Sword, Spear };
 
@@ -86,7 +88,8 @@ void APixelPlayerCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
-	LoadPoses(TEXT("SM_Hero"), 22 + SwordCombo.Num() * 3);
+	LoadPoses(TEXT("/Game/Characters/Hero/SM_Hero"), 22 + SwordCombo.Num() * 3);
+	GConfig->GetFloat(TEXT("PixelRPG.Controls"), TEXT("MouseSensitivity"), MouseSensitivity, GGameUserSettingsIni);
 	AbilitySystem->GiveAbility(FGameplayAbilitySpec(UPixelAbility_Dodge::StaticClass(), 1));
 	SpawnLocation = GetActorLocation();
 
@@ -131,15 +134,78 @@ int32 APixelPlayerCharacter::GetPoseIndex() const
 		: Base + static_cast<int32>(GetAnimTime() * 1.6f) % 2;
 }
 
-void APixelPlayerCharacter::SwapWeapon()
+bool APixelPlayerCharacter::IsWeaponAvailable(int32 Index) const
 {
-	if (Weapons.Num() > 0 && !HasStateTag(PixelTags::State_Attacking))
+	if (!Weapons.IsValidIndex(Index))
 	{
-		WeaponIndex = (WeaponIndex + 1) % Weapons.Num();
-		SetWeapon(Weapons[WeaponIndex]);
-		ComboStep = 0;
-		ComboUntil = -100.f;
-		UPixelAudioSubsystem::Play(this, EPixelSound::WeaponSwap);
+		return false;
+	}
+	const APixelGameMode* GameMode = GetWorld()->GetAuthGameMode<APixelGameMode>();
+	const FName Name(*Weapons[Index].Name);
+	return !GameMode || !GameMode->QuestLockedWeapons.Contains(Name) || Quest->HasUnlockedWeapon(Name);
+}
+
+bool APixelPlayerCharacter::SwapWeapon()
+{
+	if (Weapons.Num() < 2 || HasStateTag(PixelTags::State_Attacking))
+	{
+		return false;
+	}
+	for (int32 Offset = 1; Offset < Weapons.Num(); ++Offset)
+	{
+		const int32 Next = (WeaponIndex + Offset) % Weapons.Num();
+		if (IsWeaponAvailable(Next))
+		{
+			WeaponIndex = Next;
+			SetWeapon(Weapons[WeaponIndex]);
+			ComboStep = 0;
+			ComboUntil = -100.f;
+			UPixelAudioSubsystem::Play(this, EPixelSound::WeaponSwap);
+			Quest->NotifyAction(PixelQuestActions::SwapWeapon);
+			return true;
+		}
+	}
+	return false;
+}
+
+void APixelPlayerCharacter::ToggleView()
+{
+	CameraRig->ToggleViewMode();
+	Quest->NotifyAction(PixelQuestActions::ToggleView);
+}
+
+void APixelPlayerCharacter::ToggleCompanionMount()
+{
+	const bool bWasMounted = Companion->IsMounted();
+	Companion->ToggleMount();
+	if (bWasMounted && !Companion->IsMounted())
+	{
+		Quest->NotifyAction(PixelQuestActions::CompanionDeploy);
+	}
+}
+
+void APixelPlayerCharacter::ToggleCompanionAutoCast()
+{
+	Companion->SetAutoCast(!Companion->IsAutoCast());
+	if (!Companion->IsAutoCast())
+	{
+		Quest->NotifyAction(PixelQuestActions::ManualCast);
+	}
+}
+
+void APixelPlayerCharacter::CastCompanionBolt()
+{
+	if (Companion->CastBolt(FindNearestEnemy(Companion->BoltRange)))
+	{
+		Quest->NotifyAction(PixelQuestActions::Bolt);
+	}
+}
+
+void APixelPlayerCharacter::CastCompanionEmpower()
+{
+	if (Companion->CastEmpower())
+	{
+		Quest->NotifyAction(PixelQuestActions::Empower);
 	}
 }
 
@@ -206,23 +272,91 @@ APixelInteractable* APixelPlayerCharacter::FindFocus() const
 
 APixelInteractable* APixelPlayerCharacter::FindQuestTestGoal() const
 {
-	const bool bWantNpc = Quest->GetState() == EPixelQuestState::NotStarted || Quest->IsReadyToTurnIn();
-	const bool bWantHerb = Quest->GetState() == EPixelQuestState::Active && Quest->GetHerbs() < Quest->HerbsNeeded;
+	// Hand in, then work on objectives (markers, nodes), then pick up new quests.
 	APixelInteractable* Best = nullptr;
+	int32 BestRank = 0;
 	float BestDistSq = TNumericLimits<float>::Max();
 	for (TActorIterator<APixelInteractable> It(GetWorld()); It; ++It)
 	{
-		const APixelGatherable* Gatherable = Cast<APixelGatherable>(*It);
-		const bool bWanted = Gatherable ? (bWantHerb && Gatherable->GetItemId() == UPixelQuestComponent::HerbItem && !Gatherable->IsDepleted())
-			: (bWantNpc && It->IsA<APixelNpc>());
+		int32 Rank = 0;
+		if (const APixelGatherable* Gatherable = Cast<APixelGatherable>(*It))
+		{
+			Rank = !Gatherable->IsDepleted() && Quest->WantsItem(Gatherable->GetItemId()) ? 2 : 0;
+		}
+		else if (const APixelQuestMarker* Marker = Cast<APixelQuestMarker>(*It))
+		{
+			Rank = Quest->WantsReach(Marker->MarkerId) ? 2 : 0;
+		}
+		else if (const APixelNpc* Npc = Cast<APixelNpc>(*It))
+		{
+			Rank = Quest->FindTurnInFor(Npc->NpcId) ? 3 : Quest->FindOfferFor(Npc->NpcId) ? 1 : 0;
+		}
 		const float DistSq = FVector::DistSquared2D(It->GetActorLocation(), GetActorLocation());
-		if (bWanted && DistSq < BestDistSq)
+		if (Rank > 0 && (Rank > BestRank || (Rank == BestRank && DistSq < BestDistSq)))
+		{
+			Best = *It;
+			BestRank = Rank;
+			BestDistSq = DistSq;
+		}
+	}
+	return Best;
+}
+
+APixelCharacterBase* APixelPlayerCharacter::FindAutoplayTarget() const
+{
+	// Bolts need something in range too: stay at the dummy while the companion practises on it.
+	const bool bWantDummy = Quest->WantsAction(PixelQuestActions::HitDummy) || Quest->WantsAction(PixelQuestActions::ComboFinisher)
+		|| Quest->WantsAction(PixelQuestActions::Bolt);
+	APixelCharacterBase* Best = nullptr;
+	float BestDistSq = FMath::Square(5000.f);
+	for (TActorIterator<APixelCharacterBase> It(GetWorld()); It; ++It)
+	{
+		if (It->TeamId == TeamId || It->IsDead() || (It->IsA<APixelTrainingDummy>() && !bWantDummy))
+		{
+			continue;
+		}
+		const float DistSq = FVector::DistSquared2D(It->GetActorLocation(), GetActorLocation());
+		if (DistSq < BestDistSq)
 		{
 			BestDistSq = DistSq;
 			Best = *It;
 		}
 	}
 	return Best;
+}
+
+void APixelPlayerCharacter::AutoplayQuestActions()
+{
+	const float Now = GetWorld()->GetTimeSeconds();
+	if (Now < NextAutoplayAction)
+	{
+		return;
+	}
+	NextAutoplayAction = Now + 1.2f;
+	if (Quest->WantsAction(PixelQuestActions::ToggleView))
+	{
+		ToggleView();
+		ToggleView(); // and back, so the screenshots keep the usual view
+	}
+	if (Companion && !Companion->IsDowned())
+	{
+		if (Quest->WantsAction(PixelQuestActions::CompanionDeploy) && Companion->IsMounted())
+		{
+			ToggleCompanionMount();
+		}
+		else if (Quest->WantsAction(PixelQuestActions::ManualCast) && Companion->IsAutoCast())
+		{
+			ToggleCompanionAutoCast();
+		}
+		else if (Quest->WantsAction(PixelQuestActions::Bolt))
+		{
+			CastCompanionBolt();
+		}
+		else if (Quest->WantsAction(PixelQuestActions::Empower))
+		{
+			CastCompanionEmpower();
+		}
+	}
 }
 
 void APixelPlayerCharacter::ShowNotice(const FString& Text, float Seconds)
@@ -255,7 +389,7 @@ bool APixelPlayerCharacter::GetDialogue(FString& OutSpeaker, FString& OutText) c
 void APixelPlayerCharacter::ApplyQuestBonus(bool bHeal)
 {
 	const float Health = GetHealth();
-	StartingHealth = BaseHealth + (Quest->IsCompleted() ? 25.f : 0.f); // also what a respawn restores
+	StartingHealth = BaseHealth + Quest->GetBonusMaxHealth(); // also what a respawn restores
 	Attributes->SetMaxHealth(StartingHealth);
 	Attributes->SetHealth(bHeal ? StartingHealth : FMath::Min(Health, StartingHealth));
 }
@@ -265,7 +399,7 @@ void APixelPlayerCharacter::RestoreFromSave(const FVector& Location, float Healt
 	SetActorLocation(Location + FVector(0.f, 0.f, 10.f), false, nullptr, ETeleportType::TeleportPhysics);
 	ApplyQuestBonus(true);
 	Attributes->SetHealth(FMath::Clamp(Health, 1.f, StartingHealth));
-	if (Weapons.IsValidIndex(SavedWeaponIndex))
+	if (IsWeaponAvailable(SavedWeaponIndex))
 	{
 		WeaponIndex = SavedWeaponIndex;
 		SetWeapon(Weapons[WeaponIndex]);
@@ -299,35 +433,43 @@ void APixelPlayerCharacter::Tick(float DeltaSeconds)
 		float MouseX = 0.f, MouseY = 0.f;
 		PC->GetInputMouseDelta(MouseX, MouseY);
 		CameraRig->AddLookInput(MouseX * MouseSensitivity, MouseY * MouseSensitivity);
-		if (PC->WasInputKeyJustPressed(EKeys::V)) { CameraRig->ToggleViewMode(); }
+		if (PC->WasInputKeyJustPressed(EKeys::V)) { ToggleView(); }
 
 		if (Companion)
 		{
-			if (PC->WasInputKeyJustPressed(EKeys::G)) { Companion->ToggleMount(); }
+			if (PC->WasInputKeyJustPressed(EKeys::G)) { ToggleCompanionMount(); }
 			if (PC->WasInputKeyJustPressed(EKeys::One)) { Companion->SetOrder(EPixelCompanionOrder::Follow); }
 			if (PC->WasInputKeyJustPressed(EKeys::Two)) { Companion->SetOrder(EPixelCompanionOrder::Hold); }
 			if (PC->WasInputKeyJustPressed(EKeys::Three)) { Companion->SetOrder(EPixelCompanionOrder::Focus); }
-			if (PC->WasInputKeyJustPressed(EKeys::T)) { Companion->SetAutoCast(!Companion->IsAutoCast()); }
-			if (PC->WasInputKeyJustPressed(EKeys::F)) { Companion->CastBolt(FindNearestEnemy(Companion->BoltRange)); }
-			if (PC->WasInputKeyJustPressed(EKeys::C)) { Companion->CastEmpower(); }
+			if (PC->WasInputKeyJustPressed(EKeys::T)) { ToggleCompanionAutoCast(); }
+			if (PC->WasInputKeyJustPressed(EKeys::F)) { CastCompanionBolt(); }
+			if (PC->WasInputKeyJustPressed(EKeys::C)) { CastCompanionEmpower(); }
 		}
 		if (PC->WasInputKeyJustPressed(EKeys::E) && Focus) { Focus->Interact(this); }
 		if (APixelGameMode* GameMode = GetWorld()->GetAuthGameMode<APixelGameMode>())
 		{
 			if (PC->WasInputKeyJustPressed(EKeys::F5) && GameMode->SaveGame(TEXT("manual")))
 			{
-				ShowNotice(TEXT("Game saved"));
+				ShowNotice(TEXT("저장했습니다"));
 				UPixelAudioSubsystem::Play(this, EPixelSound::Save);
 			}
 			if (PC->WasInputKeyJustPressed(EKeys::F9))
 			{
-				ShowNotice(GameMode->LoadGame() ? TEXT("Game loaded") : TEXT("No save to load"));
+				ShowNotice(GameMode->LoadGame() ? TEXT("불러왔습니다") : TEXT("불러올 저장이 없습니다"));
 				UPixelAudioSubsystem::Play(this, EPixelSound::Load);
 			}
 		}
 		if (PC->WasInputKeyJustPressed(EKeys::Left)) { CameraRig->RotateView(1); }
 		if (PC->WasInputKeyJustPressed(EKeys::Right)) { CameraRig->RotateView(-1); }
 		if (PC->WasInputKeyJustPressed(EKeys::F1)) { CameraRig->TogglePixelEffect(); }
+		const int32 SensitivityStep = (PC->WasInputKeyJustPressed(EKeys::RightBracket) ? 1 : 0) - (PC->WasInputKeyJustPressed(EKeys::LeftBracket) ? 1 : 0);
+		if (SensitivityStep != 0)
+		{
+			MouseSensitivity = FMath::Clamp(FMath::RoundToFloat((MouseSensitivity + 0.1f * SensitivityStep) * 10.f) / 10.f, 0.1f, 3.f);
+			GConfig->SetFloat(TEXT("PixelRPG.Controls"), TEXT("MouseSensitivity"), MouseSensitivity, GGameUserSettingsIni);
+			GConfig->Flush(false, GGameUserSettingsIni);
+			ShowNotice(FString::Printf(TEXT("마우스 감도 %.1f"), MouseSensitivity), 1.5f);
+		}
 		CameraRig->AddZoomInput((PC->IsInputKeyDown(EKeys::X) ? 1.f : 0.f) - (PC->IsInputKeyDown(EKeys::Z) ? 1.f : 0.f), DeltaSeconds);
 	}
 
@@ -339,10 +481,17 @@ void APixelPlayerCharacter::Tick(float DeltaSeconds)
 	static const bool bAutoPlay = bQuestTest || FParse::Param(FCommandLine::Get(), TEXT("PixelCombatTest"));
 	if (bAutoPlay)
 	{
-		const APixelCharacterBase* Enemy = FindNearestEnemy(5000.f);
+		const APixelCharacterBase* Enemy = bQuestTest ? FindAutoplayTarget() : FindNearestEnemy(5000.f);
 		APixelInteractable* Goal = bQuestTest ? FindQuestTestGoal() : nullptr;
+		if (bQuestTest)
+		{
+			AutoplayQuestActions();
+			bDodge = Quest->WantsAction(PixelQuestActions::Dodge) && GetWorld()->GetTimeSeconds() - LastDodgeTime > 1.f;
+		}
 		const bool bEnemyInTheWay = Enemy && FVector::Dist2D(Enemy->GetActorLocation(), GetActorLocation()) < 320.f;
-		if (Goal && !bEnemyInTheWay)
+		// The dummy is in the way on purpose while a quest wants it hit; anything else on the way gets fought first.
+		const bool bTrainHere = Enemy && Enemy->IsA<APixelTrainingDummy>();
+		if (Goal && !bEnemyInTheWay && !bTrainHere)
 		{
 			const FVector ToGoal = (Goal->GetActorLocation() - GetActorLocation()) * FVector(1.f, 1.f, 0.f);
 			// Turn the camera towards the goal, so the screenshot shows what is being used.
@@ -356,6 +505,23 @@ void APixelPlayerCharacter::Tick(float DeltaSeconds)
 			else
 			{
 				MoveDir = ToGoal.GetSafeNormal();
+				// No path finding: when a house or rock stops the walk, slide along it for a second.
+				const float Time = GetWorld()->GetTimeSeconds();
+				if (Time >= NextStuckCheck)
+				{
+					const bool bStuck = FVector::Dist2D(GetActorLocation(), StuckCheckLocation) < 60.f;
+					StuckCheckLocation = GetActorLocation();
+					NextStuckCheck = Time + 0.8f;
+					if (bStuck)
+					{
+						DetourSide = -DetourSide;
+						DetourUntil = Time + 1.2f;
+					}
+				}
+				if (Time < DetourUntil)
+				{
+					MoveDir = (MoveDir + FVector::CrossProduct(FVector::UpVector, MoveDir) * DetourSide * 1.5f).GetSafeNormal();
+				}
 			}
 		}
 		else if (Enemy)
@@ -366,7 +532,7 @@ void APixelPlayerCharacter::Tick(float DeltaSeconds)
 		}
 		// Exercise the companion: ride for 8 s, fight on the ground until 18 s, then call it back.
 		const float Now = GetWorld()->GetTimeSeconds();
-		if (Companion && !Companion->IsDowned() && Companion->IsMounted() == (Now > 8.f && Now < 18.f))
+		if (!bQuestTest && Companion && !Companion->IsDowned() && Companion->IsMounted() == (Now > 8.f && Now < 18.f))
 		{
 			Companion->ToggleMount();
 		}
@@ -399,6 +565,7 @@ void APixelPlayerCharacter::Tick(float DeltaSeconds)
 		{
 			LastDodgeTime = GetWorld()->GetTimeSeconds();
 			UPixelAudioSubsystem::Play(this, EPixelSound::Dodge);
+			Quest->NotifyAction(PixelQuestActions::Dodge);
 		}
 	}
 
@@ -426,6 +593,10 @@ void APixelPlayerCharacter::HandleDamaged(float Amount, AActor* DamageInstigator
 
 void APixelPlayerCharacter::NotifyHitLanded(int32 TargetCount)
 {
+	if (WeaponIndex == 0 && ComboStep == SwordCombo.Num() && SwordCombo.Num() > 0)
+	{
+		Quest->NotifyAction(PixelQuestActions::ComboFinisher);
+	}
 	if (CameraRig)
 	{
 		CameraRig->Shake(2.f);

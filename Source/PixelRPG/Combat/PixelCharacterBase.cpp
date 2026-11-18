@@ -10,6 +10,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
+#include "Misc/Paths.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "TimerManager.h"
@@ -73,7 +74,7 @@ void APixelCharacterBase::BeginPlay()
 	AbilitySystem->GiveAbility(FGameplayAbilitySpec(UPixelAbility_Melee::StaticClass(), 1));
 	ResetHealth();
 
-	if (UStaticMesh* Slash = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Meshes/SM_SlashArc.SM_SlashArc")))
+	if (UStaticMesh* Slash = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Effects/SM_SlashArc.SM_SlashArc")))
 	{
 		SlashMesh->SetStaticMesh(Slash);
 	}
@@ -100,10 +101,11 @@ void APixelCharacterBase::LoadPoses(const TCHAR* Prefix, int32 Count)
 	PoseMeshes.Reset();
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
-		const FString Name = FString::Printf(TEXT("%s_%02d"), Prefix, Index);
-		PoseMeshes.Add(LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("/Game/Meshes/%s.%s"), *Name, *Name)));
+		const FString Package = FString::Printf(TEXT("%s_%02d"), Prefix, Index);
+		PoseMeshes.Add(LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("%s.%s"), *Package, *FPaths::GetBaseFilename(Package))));
 	}
-	SetBodyMesh(*FString::Printf(TEXT("/Game/Meshes/%s_00.%s_00"), Prefix, Prefix));
+	const FString First = FString::Printf(TEXT("%s_00"), Prefix);
+	SetBodyMesh(*FString::Printf(TEXT("%s.%s"), *First, *FPaths::GetBaseFilename(First)));
 	AnimTime = FMath::FRandRange(0.f, 10.f);
 }
 
@@ -184,10 +186,11 @@ void APixelCharacterBase::StartDash(const FVector& Direction, float Speed, float
 
 void APixelCharacterBase::ApplyKnockback(const FVector& Direction, float Strength)
 {
+	Strength *= KnockbackScale;
 	if (Strength > 0.f && !IsDead())
 	{
 		DashTimeLeft = 0.f;
-		LaunchCharacter(Direction.GetSafeNormal2D() * Strength + FVector(0.f, 0.f, 120.f), true, true);
+		LaunchCharacter(Direction.GetSafeNormal2D() * Strength + FVector(0.f, 0.f, 120.f * FMath::Min(KnockbackScale, 1.f)), true, true);
 	}
 }
 

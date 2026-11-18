@@ -8,8 +8,9 @@ class APixelEnemyCharacter;
 class APixelPlayerCharacter;
 
 /**
- * Spawns the player, keeps a handful of enemies alive around them, places the quest giver and the
- * gathering nodes, and owns the save game.
+ * Spawns the player and owns the save game. The map (PixelTest, built by Tools/setup_pixel_assets.py) places
+ * everything else: the village NPCs, gathering nodes, quest markers, training dummies and the enemy spawners.
+ * Optionally keeps wandering slimes alive around the player (MaxEnemies).
  *
  * Command line: -PixelNewGame ignores and replaces an existing save, -PixelSaveSlot=<name> uses another slot.
  */
@@ -33,8 +34,13 @@ public:
 	/** World time of the last successful save, for the "Saved" hint on the HUD. */
 	float GetLastSaveTime() const { return LastSaveTime; }
 
+	/** Wandering slimes kept alive around the player. 0: the map places camps of spawners around the valley instead. */
 	UPROPERTY(EditAnywhere, Category = "Combat")
-	int32 MaxEnemies = 5;
+	int32 MaxEnemies = 0;
+
+	/** Most enemies that fight the player (and companion) at the same time; the rest wait (APixelEnemyCharacter::FindTarget). */
+	UPROPERTY(EditAnywhere, Category = "Combat")
+	int32 MaxEngagedEnemies = 5;
 
 	UPROPERTY(EditAnywhere, Category = "Combat")
 	float SpawnInterval = 2.5f;
@@ -48,9 +54,17 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Save")
 	float AutosaveInterval = 30.f;
 
+	/** Weapons (FPixelWeaponDef::Name) the player cannot switch to until a quest reward unlocks them. */
+	UPROPERTY(EditAnywhere, Category = "Quest")
+	TArray<FName> QuestLockedWeapons;
+
+protected:
+	FString SaveSlot = TEXT("PixelSlot0");
+
 private:
+	/** Logs what the map placed for the quests, so a broken map shows up in the log. */
+	void LogWorldObjects() const;
 	void SpawnEnemies();
-	void SpawnWorldObjects();
 	void LoadOnStart();
 	void Autosave();
 	/** Height of the terrain below a point, ignoring houses, rocks and anything else standing on it. */
@@ -59,7 +73,6 @@ private:
 
 	int32 KillCount = 0;
 	float LastSaveTime = -100.f;
-	FString SaveSlot = TEXT("PixelSlot0");
 	FTimerHandle SpawnTimer;
 	FTimerHandle AutosaveTimer;
 };

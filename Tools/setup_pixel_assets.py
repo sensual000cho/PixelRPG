@@ -1,16 +1,22 @@
 """Creates the UE assets of the prototype from SourceArt/ (see make_assets_blender.py, make_textures.py).
 
-  /Game/Pixel/M_PixelPost      post process: soft dithered shading, fog, sky, character outline
-  /Game/Pixel/M_VertexColor    vertex colours x pixel detail texture (props; cut away when they hide the player)
-  /Game/Pixel/M_Character      the same without the cut-away (characters, weapons)
-  /Game/Pixel/M_Terrain        vertex colours x ground texture (the valley floor)
-  /Game/Pixel/T_*              detail textures
-  /Game/Meshes/SM_*            meshes
-  /Game/Maps/PixelTest         test level (overwritten on every run)
+  /Game/Materials/M_PixelPost      post process: soft dithered shading, fog, sky, character outline
+  /Game/Materials/M_VertexColor    vertex colours x pixel detail texture (props; cut away when they hide the player)
+  /Game/Materials/M_Character      the same without the cut-away (characters, weapons)
+  /Game/Materials/M_Terrain        vertex colours x ground texture (the valley floor)
+  /Game/Textures/T_*               detail textures
+  /Game/Characters/...             flip-book pose meshes: Hero, Companion, Villager, Enemies/<kind>
+  /Game/Weapons, /Game/Effects     weapons; slash arc, bolt, ring
+  /Game/Environment/...            Trees, Rocks, Plants, Buildings, Resources, Foliage (foliage types)
+  /Game/Props/Figures              the figures that stand in the village
+  /Game/Dev                        third-party sound packs (left as they came)
+  /Game/Maps/PixelTest         the level (overwritten on every run): the valley with its monster camps and, in the
+                               middle, the village of Brookhollow where the quest line is played (see QUEST_* below)
 
 Run from the editor:  Tools > Execute Python Script...
 or headless:          UnrealEditor-Cmd.exe PixelRPG.uproject -ExecutePythonScript=Tools/setup_pixel_assets.py
 """
+import fnmatch
 import math
 import os
 import random
@@ -26,22 +32,72 @@ mel = unreal.MaterialEditingLibrary
 asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
 eal = unreal.EditorAssetLibrary
 
-PIXEL_DIR = "/Game/Pixel"
-MESH_DIR = "/Game/Meshes"
+MATERIAL_DIR = "/Game/Materials"
+TEXTURE_DIR = "/Game/Textures"
+FOLIAGE_DIR = "/Game/Environment/Foliage"
+# Folders of the meshes in the content browser: name patterns, the first match wins.
+# The C++ code loads some of these by path: keep Source/PixelRPG in step when moving one.
+MESH_FOLDERS = [
+    (["SM_Hero_*"], "/Game/Characters/Hero"),
+    (["SM_Companion_*"], "/Game/Characters/Companion"),
+    (["SM_Villager_*"], "/Game/Characters/Villager"),
+    (["SM_Slime_*"], "/Game/Characters/Enemies/Slime"),
+    (["SM_Mushroom_*"], "/Game/Characters/Enemies/Mushroom"),
+    (["SM_RockMonster_*"], "/Game/Characters/Enemies/RockMonster"),
+    (["SM_Sword", "SM_Spear"], "/Game/Weapons"),
+    (["SM_SlashArc", "SM_Bolt", "SM_Ring"], "/Game/Effects"),
+    (["SM_Tree*"], "/Game/Environment/Trees"),
+    (["SM_Rock", "SM_Crystal", "SM_Mountain"], "/Game/Environment/Rocks"),
+    (["SM_Bush", "SM_Grass", "SM_Flowers"], "/Game/Environment/Plants"),
+    (["SM_House"], "/Game/Environment/Buildings"),
+    (["SM_Herb", "SM_Ore"], "/Game/Environment/Resources"),
+    (["SM_Goblin", "SM_Samurai", "SM_Knight", "SM_Mushroom"], "/Game/Props/Figures"),
+]
+# Where everything lived before the content browser was sorted into folders (moved by organize_content()).
+LEGACY_DIRS = ["/Game/Pixel", "/Game/Meshes"]
+
+
+def mesh_dir(name):
+    for patterns, folder in MESH_FOLDERS:
+        if any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns):
+            return folder
+    raise RuntimeError(f"no content folder for {name}: add it to MESH_FOLDERS")
 MAP_PATH = "/Game/Maps/PixelTest"
 COLLECTION = None   # /Game/Pixel/MPC_Pixel, made first by main()
+
+# The places (x, y) of the quest line of Brookhollow (formerly the QuestTest map). Keep them apart: a slime notices the
+# player 1100 units away. Quest ids, NPC ids and marker ids must match Source/PixelRPG/World/PixelQuestCatalog.cpp.
+#   village square (start)   Elder Maren, Smith Hilda
+#   west gate (road, west)   the FirstSteps marker; the old mine with copper beyond it
+#   training yard (east)     Captain Brann, Mage Ilsa, two training dummies
+#   garden (north)           Herbalist Orlen, moonleaf beds, a slime spawner
+#   glade (far east)         the Slime King and its followers, while that quest is active
+QUEST_START = (0, -150)
+QUEST_GATE = (-2000, terrain.path_center(-2000))
+QUEST_MINE = (-2350, -1350)
+QUEST_YARD = (1500, -520)
+QUEST_GARDEN = (-250, 1650)
+QUEST_GLADE = (3300, 900)
+# Areas kept clear of trees, rocks and monster camps: (x, y, radius).
+QUEST_CLEAR = [(0, 0, 1150), (*QUEST_YARD, 650), (*QUEST_GARDEN, 800), (*QUEST_MINE, 650), (*QUEST_GATE, 420), (*QUEST_GLADE, 750)]
+# A monster camp stays this far from every quest place, so its monsters never wander into the quests.
+QUEST_CAMP_DISTANCE = 2000.0
 SOURCE_DIR = os.path.join(PROJECT_DIR, "SourceArt")
 
 # Characters are animated like a flip book: one model per pose (see the *_POSES lists in make_assets_blender.py).
-POSE_SETS = {"SM_Hero": 34, "SM_Slime": 7, "SM_Companion": 7, "SM_Villager": 4}
+# SM_Mushroom_* come from Desktop/Project_PixelRPG/make_mushroom.py, not make_assets_blender.py.
+# SM_RockMonster_* come from Desktop/Project_PixelRPG/RockMonster/make_rock_monster.py (posed from the rigged RockMonster.blend).
+POSE_SETS = {"SM_Hero": 34, "SM_Slime": 7, "SM_Companion": 7, "SM_Villager": 4, "SM_Mushroom": 7, "SM_RockMonster": 7}
 POSE_MESHES = [f"{prefix}_{i:02d}" for prefix, count in POSE_SETS.items() for i in range(count)]
+# Stand-alone figures (not animated): shown in a row beside the start for now.
+FIGURES = ["SM_Goblin", "SM_Samurai", "SM_Knight", "SM_Mushroom"]
 TREES = ["SM_TreePine", "SM_TreeRound", "SM_TreeRed", "SM_TreeOrange"]
 # Every tree is two models on the same spot: the trunk blocks movement, the leaves collide with nothing.
 TRUNK_MESHES = {tree + "_Trunk" for tree in TREES}
 LEAF_MESHES = {tree + "_Leaves" for tree in TREES}
 MESHES = POSE_MESHES + sorted(TRUNK_MESHES) + sorted(LEAF_MESHES) + ["SM_Rock", "SM_Bush",
           "SM_Grass", "SM_Flowers", "SM_Crystal", "SM_House", "SM_Sword", "SM_Spear",
-          "SM_SlashArc", "SM_Ring", "SM_Bolt", "SM_Herb", "SM_Ore", "SM_Mountain"]
+          "SM_SlashArc", "SM_Ring", "SM_Bolt", "SM_Herb", "SM_Ore", "SM_Mountain"] + FIGURES
 # Meshes with leaf cards: their second material slot shows the alpha cut-out foliage atlas.
 FOLIAGE_MESHES = LEAF_MESHES | {"SM_Bush", "SM_Grass"}
 # Placed as foliage instances (the same thing the editor's Foliage mode paints): no collision, cheap to draw
@@ -52,7 +108,7 @@ SOLID_MESHES = {"SM_Rock", "SM_Crystal", "SM_House"} | TRUNK_MESHES
 # Characters and what they carry: never cut away by the see-through effect.
 CHARACTER_MESHES = set(POSE_MESHES) | {"SM_Sword", "SM_Spear", "SM_Bolt", "SM_SlashArc"}
 # Things to pick up: part of the world (full resolution, real depth), but never cut away.
-PROP_MESHES = {"SM_Herb", "SM_Ore"}
+PROP_MESHES = {"SM_Herb", "SM_Ore"} | set(FIGURES)
 
 POST_CODE = r"""
 // Scene texture ids: 14 = PostProcessInput0, 1 = SceneDepth, 5 = BaseColor, 13 = CustomDepth, 25 = CustomStencil
@@ -154,10 +210,10 @@ float3 ShadowTint = float3(0.40, 0.45, 0.62) * ShadowBrightness;
 float3 LitTint = float3(1.00, 0.96, 0.88);
 float3 Out = B * lerp(ShadowTint, LitTint, Band) * View.PreExposure;
 
-// Darker pixels along the silhouette of a character.
+// Black pixels along the silhouette of a character (OutlineDarken 0), grey-black inner lines.
 Out = lerp(Out, Out * OutlineDarken, CellEdge);   // CellEdge is 1 on the silhouette, less on inner lines
 
-// --- Fog: thick haze that swallows the distance ---
+// --- Fog: haze that softens the distance ---
 float Fog = saturate((D - FogStart) / max(FogEnd - FogStart, 1)) * FogMax;
 Out = lerp(Out, Haze * View.PreExposure, saturate(Fog));
 return Out;
@@ -225,10 +281,10 @@ def build_parameter_collection():
     """Values the running game sets for every material at once (see APixelCameraRig::BeginPlay).
     SeeThrough: 1 while playing, 0 otherwise."""
     # Kept from run to run: replacing it while materials that use the old one are still loaded crashes the renderer.
-    collection = unreal.load_asset(f"{PIXEL_DIR}/MPC_Pixel.MPC_Pixel")
+    collection = unreal.load_asset(f"{MATERIAL_DIR}/MPC_Pixel.MPC_Pixel")
     if collection:
         return collection
-    collection = asset_tools.create_asset("MPC_Pixel", PIXEL_DIR, unreal.MaterialParameterCollection,
+    collection = asset_tools.create_asset("MPC_Pixel", MATERIAL_DIR, unreal.MaterialParameterCollection,
                                           unreal.MaterialParameterCollectionFactoryNew())
     switch = unreal.CollectionScalarParameter()
     switch.set_editor_property("parameter_name", "SeeThrough")
@@ -246,8 +302,8 @@ def connect_see_through_switch(mat, mask, x, y):
 
 
 def create_material(name):
-    delete_if_exists(f"{PIXEL_DIR}/{name}")
-    return asset_tools.create_asset(name, PIXEL_DIR, unreal.Material, unreal.MaterialFactoryNew())
+    delete_if_exists(f"{MATERIAL_DIR}/{name}")
+    return asset_tools.create_asset(name, MATERIAL_DIR, unreal.Material, unreal.MaterialFactoryNew())
 
 
 def add_custom(mat, description, code, input_names, x=-450, y=0):
@@ -295,10 +351,10 @@ def import_files(names, extension, destination):
 
 def import_textures():
     names = ["T_Detail", "T_Ground", "T_Foliage", "T_TerrainColor"]
-    import_files(names, ".png", PIXEL_DIR)
+    import_files(names, ".png", TEXTURE_DIR)
     textures = {}
     for name in names:
-        tex = unreal.load_asset(f"{PIXEL_DIR}/{name}.{name}")
+        tex = unreal.load_asset(f"{TEXTURE_DIR}/{name}.{name}")
         if not tex:
             raise RuntimeError(f"texture import failed: {name}")
         # Stored as plain multipliers (128 = no change) and shown as crisp texels.
@@ -333,13 +389,13 @@ def build_post_material():
     params = [
         ("CharBands", 3.0),
         ("DepthEdge", 0.3),     # world units; character depth is squashed to 3 %, so 0.3 is about 10 units of model
-        ("InnerLine", 0.6),
+        ("InnerLine", 0.4),     # inner lines: 40 % of the way to the outline colour
         ("LightMax", 0.85),
         ("ShadowBrightness", 1.0),
-        ("OutlineDarken", 0.36),
-        ("FogStart", 1300.0),
-        ("FogEnd", 5600.0),
-        ("FogMax", 0.86),
+        ("OutlineDarken", 0.0), # silhouette of players, monsters and NPCs: 0 = black
+        ("FogStart", 2600.0),   # light haze: starts further out and never swallows the distance completely
+        ("FogEnd", 11000.0),
+        ("FogMax", 0.6),
         ("SkyDepth", 100000.0),
     ]
     # One per character on screen: x, y = grid anchor in pixels, z = cell size in pixels (set by APixelCameraRig).
@@ -500,10 +556,14 @@ def build_foliage_material(texture):
 
 
 def import_meshes(material, character_material, foliage_material, prop_material):
-    import_files(MESHES, ".fbx", MESH_DIR)
+    folders = {}
+    for name in MESHES:
+        folders.setdefault(mesh_dir(name), []).append(name)
+    for folder, names in folders.items():
+        import_files(names, ".fbx", folder)
     meshes = {}
     for name in MESHES:
-        mesh = unreal.load_asset(f"{MESH_DIR}/{name}.{name}")
+        mesh = unreal.load_asset(f"{mesh_dir(name)}/{name}.{name}")
         if not mesh:
             raise RuntimeError(f"import failed: {name}")
         mesh.set_material(0, character_material if name in CHARACTER_MESHES else prop_material if name in PROP_MESHES else material)
@@ -524,7 +584,118 @@ def import_meshes(material, character_material, foliage_material, prop_material)
         box = mesh.get_bounding_box()
         unreal.log(f"PixelRPG: {name} size {box.max.x - box.min.x:.0f} x {box.max.y - box.min.y:.0f} x {box.max.z - box.min.z:.0f}")
         meshes[name] = mesh
+    # The importer also makes a material for every slot of the FBX (Surface, Foliage, VertexColour...): unused,
+    # since the meshes get the materials above.
+    for folder in folders:
+        for path in eal.list_assets(folder, recursive=False):
+            if isinstance(unreal.load_asset(path), unreal.MaterialInterface):
+                eal.delete_asset(path.split(".")[0])
     return meshes
+
+
+def place_quest_content(world, actor_sub, meshes, spawn, ground):
+    """Brookhollow: the village, its NPCs and the places of the quest line (see QUEST_* at the top).
+
+    NPCs, nodes, markers, dummies and spawners are ordinary actors in the map: move them in the editor if you like.
+    """
+    rng = random.Random(11)
+
+    def place(cls, x, y, yaw=0.0, label=None, z_offset=0.0, folder="Quest"):
+        actor = actor_sub.spawn_actor_from_class(cls, unreal.Vector(x, y, ground(x, y) + z_offset), unreal.Rotator(0, 0, yaw))
+        if label:
+            actor.set_actor_label(label)
+        actor.set_folder_path(folder)
+        return actor
+
+    def face(x, y, tx, ty):
+        return math.degrees(math.atan2(ty - y, tx - x))
+
+    # --- Set pieces (first, so the quest actors stand on the ground and not on a rock) ---
+    spawn("SM_House", 650, -650, yaw=200, label="House_Elder", folder="Village")
+    spawn("SM_House", -750, -700, yaw=160, label="House_Forge", folder="Village")
+    spawn("SM_House", 600, 650, yaw=20, label="House_North", folder="Village")
+    spawn("SM_Rock", -470, -620, yaw=30, scale=0.9, label="Anvil", folder="Village")
+    spawn("SM_Crystal", -160, 380, yaw=20, scale=0.7, label="WellCrystal", folder="Village")
+
+    gate_x, gate_y = QUEST_GATE
+    for side, offset in (("N", 280), ("S", -280)):   # two standing stones either side of the road
+        spawn("SM_Rock", gate_x, gate_y + offset, yaw=offset, scale=1.6, label=f"GateStone{side}", folder="WestGate")
+    mine_x, mine_y = QUEST_MINE
+    for i in range(7):                                 # the old mine: rocks and crystals around the ore
+        angle = i / 7 * math.tau
+        spawn("SM_Rock", mine_x + 520 * math.cos(angle), mine_y + 520 * math.sin(angle),
+              yaw=rng.uniform(0, 360), scale=rng.uniform(1.2, 2.0), label=f"MineRock{i}", folder="Mine")
+    spawn("SM_Crystal", mine_x - 120, mine_y - 380, yaw=40, scale=1.2, label="MineCrystalA", folder="Mine")
+    spawn("SM_Crystal", mine_x + 300, mine_y - 260, yaw=200, scale=0.8, label="MineCrystalB", folder="Mine")
+
+    yard_x, yard_y = QUEST_YARD
+    for i in range(10):                                # bushes for a hedge around the training yard
+        angle = i / 10 * math.tau
+        spawn("SM_Bush", yard_x + 560 * math.cos(angle), yard_y + 430 * math.sin(angle), yaw=rng.uniform(0, 360), scale=1.2)
+    garden_x, garden_y = QUEST_GARDEN
+    for i in range(40):                                # flowers around the moonleaf beds
+        x, y = garden_x + rng.uniform(-650, 650), garden_y + rng.uniform(-500, 500)
+        spawn("SM_Flowers", x, y, yaw=rng.uniform(0, 360), scale=rng.uniform(1.0, 1.8), shadow=False)
+    glade_x, glade_y = QUEST_GLADE
+    for i in range(9):                                 # the glade: a ring of red trees
+        angle = i / 9 * math.tau + 0.3
+        x, y = glade_x + 820 * math.cos(angle), glade_y + 820 * math.sin(angle)
+        if terrain.path_weight(x, y) < 0.05:
+            spawn("SM_TreeRed", x, y, yaw=rng.uniform(0, 360), scale=rng.uniform(1.2, 1.6), label=f"GladeTree{i}", folder="Glade")
+
+    # --- Quest actors ---
+    start_x, start_y = QUEST_START
+    actor_sub.spawn_actor_from_class(unreal.PlayerStart, unreal.Vector(start_x, start_y, ground(start_x, start_y) + 120),
+                                     unreal.Rotator(0, 0, 90)).set_folder_path("Quest")
+
+    def npc(npc_id, x, y, work, wander):
+        """work: the point it faces while going about its day (it turns to the player only when talked to)."""
+        actor = place(unreal.PixelNpc, x, y, yaw=face(x, y, *work), label=f"Npc_{npc_id}")
+        actor.set_editor_property("npc_id", npc_id)
+        actor.set_editor_property("wander_radius", wander)
+        actor.get_component_by_class(unreal.StaticMeshComponent).set_static_mesh(meshes["SM_Villager_00"])  # shows in the editor too
+        return actor
+
+    npc("Maren", 160, -280, (-160, 380), 320.0)                       # strolls about the square, watching the well
+    npc("Hilda", -470, -460, (-470, -620), 110.0)                     # at her anvil
+    npc("Brann", yard_x - 260, yard_y + 120, (yard_x + 180, yard_y), 220.0)   # watching the training dummies
+    npc("Ilsa", yard_x - 380, yard_y - 260, QUEST_YARD, 200.0)
+    npc("Orlen", garden_x, garden_y - 420, QUEST_GARDEN, 380.0)       # tending the moonleaf beds
+
+    for index, (dx, dy) in enumerate([(150, 80), (220, -200)]):
+        dummy = place(unreal.PixelTrainingDummy, yard_x + dx, yard_y + dy, yaw=180, label=f"TrainingDummy{index}")
+        half_height = dummy.get_component_by_class(unreal.CapsuleComponent).get_scaled_capsule_half_height()
+        location = dummy.get_actor_location()
+        dummy.set_actor_location(unreal.Vector(location.x, location.y, location.z + half_height + 2), False, False)
+
+    marker = place(unreal.PixelQuestMarker, gate_x, gate_y, label="Marker_WestGate")
+    marker.set_editor_property("marker_id", "WestGate")
+    marker.set_editor_property("reach_radius", 300.0)
+
+    def node(node_id, item, mesh_name, x, y, scale):
+        actor = place(unreal.PixelGatherable, x, y, yaw=rng.uniform(0, 360), label=f"Node_{node_id}")
+        actor.set_editor_property("node_id", node_id)
+        actor.set_editor_property("item_id", item)
+        actor.get_component_by_class(unreal.StaticMeshComponent).set_static_mesh(meshes[mesh_name])
+        actor.set_actor_scale3d(unreal.Vector(scale, scale, scale))
+
+    herbs = [(-520, 1550), (-180, 1700), (130, 1520), (-420, 1900), (60, 1930), (-700, 1760)]
+    for index, (x, y) in enumerate(herbs):
+        node(f"QHerb{index}", "Moonleaf", "SM_Herb", x, y, rng.uniform(1.3, 1.6))
+    ores = [(-2180, -1240), (-2430, -1120), (-2560, -1420), (-2260, -1580)]
+    for index, (x, y) in enumerate(ores):
+        node(f"QOre{index}", "Copper Ore", "SM_Ore", x, y, rng.uniform(1.0, 1.3))
+
+    def spawner(label, x, y, **props):
+        actor = place(unreal.PixelEnemySpawner, x, y, label=label, z_offset=50)
+        for key, value in props.items():
+            actor.set_editor_property(key, value)
+
+    spawner("Spawner_Garden", garden_x, garden_y + 650, max_alive=3, spawn_radius=350.0, respawn_delay=6.0)
+    spawner("Spawner_SlimeKing", glade_x, glade_y, max_alive=1, spawn_radius=120.0, enemy_tag="SlimeKing",
+            enemy_health=180.0, enemy_scale=1.8, required_quest="SlimeKing", only_while_wanted=True)
+    spawner("Spawner_GladeSlimes", glade_x, glade_y, max_alive=3, spawn_radius=500.0, respawn_delay=4.0,
+            required_quest="SlimeKing")
 
 
 def build_level(meshes, ground_material):
@@ -555,10 +726,10 @@ def build_level(meshes, ground_material):
         stats["estimated"] += 1
         return terrain.height(x, y)
 
-    def spawn(name, x, y, yaw=0.0, scale=1.0, label=None, shadow=True, z=None):
+    def spawn(name, x, y, yaw=0.0, scale=1.0, label=None, shadow=True, z=None, folder=None):
         z = ground(x, y) if z is None else z
         if name in TREES:
-            spawn(name + "_Trunk", x, y, yaw, scale, label, shadow, z)
+            spawn(name + "_Trunk", x, y, yaw, scale, label, shadow, z, folder)
             name += "_Leaves"
         if name in INSTANCED_MESHES:
             # Sunk a little, so the foot of a tuft is never above the ground on a slope.
@@ -580,6 +751,8 @@ def build_level(meshes, ground_material):
         actor.set_actor_scale3d(unreal.Vector(scale, scale, scale))
         if label:
             actor.set_actor_label(label)
+        if folder:
+            actor.set_folder_path(folder)
         return actor
 
     # Lighting: a low, warm sun for long shadows, plus sky light.
@@ -599,7 +772,6 @@ def build_level(meshes, ground_material):
     sky_comp.set_editor_property("real_time_capture", True)
     sky_comp.set_intensity(1.0)
     actor_sub.spawn_actor_from_class(unreal.SkyAtmosphere, unreal.Vector(0, 0, 0))
-    actor_sub.spawn_actor_from_class(unreal.PlayerStart, unreal.Vector(0, 0, terrain.height(0, 0) + 120))
 
     # The ground: a landscape with the heights of Tools/terrain.py. A height value of 32768 is the Z of the
     # actor, and with a Z scale of 100 one step is 100 / 128 world units.
@@ -617,32 +789,65 @@ def build_level(meshes, ground_material):
     rng = random.Random(7)
     for i in range(9):
         angle = i / 9 * math.tau + rng.uniform(-0.2, 0.2)
-        radius = rng.uniform(11000, 13500)
+        radius = rng.uniform(11000, 13500) * terrain.SCALE
         spawn("SM_Mountain", radius * math.cos(angle), radius * math.sin(angle),
               yaw=rng.uniform(0, 360), scale=rng.uniform(1.6, 2.6), label=f"Mountain{i}", shadow=False, z=600.0)
 
-    # Hand-placed set piece in the clearing at the start.
-    spawn("SM_House", 620, -520, yaw=200, label="House")
-    spawn("SM_Crystal", -460, 430, yaw=20, scale=1.3, label="CrystalA")
-    spawn("SM_Crystal", -570, 350, yaw=140, scale=0.8, label="CrystalB")
-    spawn("SM_Rock", -520, 520, yaw=60, scale=1.4, label="CrystalRock")
+    # The village of Brookhollow in the clearing at the start, and the places of the quest line around it.
+    place_quest_content(world, actor_sub, meshes, spawn, ground)
 
-    occupied = [(620, -520, 480), (0, 0, 260), (-500, 430, 200)]
-    # Keep trees and rocks off the spots where the game mode spawns the quest giver and the
-    # gathering nodes (same coordinates as APixelGameMode::SpawnWorldObjects).
-    occupied += [(x, y, 110) for x, y in [
-        (300, -300),
-        (-260, -320), (220, 400), (-720, -160), (480, 260), (-160, 720), (920, 220), (-900, 500), (300, 1100),
-        (-380, 250), (-700, 560), (1150, -250), (-1100, -500)]]
+    # The figures stand in a row south of the start, facing it.
+    for index, name in enumerate(FIGURES):
+        spawn(name, -95 * (len(FIGURES) - 1) + index * 190, -560, yaw=0, label=name[3:], folder="Village")
+
+    # Monster camps scattered over the valley, none in the clearing where the quest is given: each holds one to five
+    # enemies (rock monsters, the strongest, at most two) and the camps are far enough apart (more than any aggro
+    # range) that the player meets one group at a time. APixelGameMode::MaxEngagedEnemies caps the fight at five anyway.
+    camp_rng = random.Random(23)
+    camps = []
+    kinds = [("Slime", unreal.PixelEnemyCharacter, None, (2, 5)), ("Mushroom", unreal.PixelMushroomEnemy, "Mushroom", (1, 4)),
+             ("Rock", unreal.PixelRockEnemy, "Rock", (1, 2))]
+    reach = 5000.0 * terrain.SCALE    # inside the rim of high ground
+    for attempt in range(4000):
+        if len(camps) >= 22:
+            break
+        # The first few camps are the nearest, so the player does not walk far for the first fight.
+        near = len(camps) < 4
+        # (just outside the village, which keeps camps QUEST_CAMP_DISTANCE away)
+        distance = camp_rng.uniform(3200, 5000) if near else camp_rng.uniform(3500, reach)
+        angle = camp_rng.uniform(0, math.tau)
+        x, y = distance * math.cos(angle), distance * math.sin(angle)
+        if terrain.path_weight(x, y) > 0.05 or terrain.slope(x, y) > 0.45:
+            continue
+        if any(math.hypot(x - cx, y - cy) < 3200 for cx, cy, _ in camps):
+            continue
+        if any(math.hypot(x - qx, y - qy) < QUEST_CAMP_DISTANCE + r for qx, qy, r in QUEST_CLEAR):
+            continue
+        kind, cls, tag, (lo, hi) = kinds[0] if near and len(camps) < 2 else camp_rng.choices(kinds, [5, 4, 2])[0]
+        camps.append((x, y, kind))
+        spawner = actor_sub.spawn_actor_from_class(unreal.PixelEnemySpawner, unreal.Vector(x, y, ground(x, y) + 50))
+        spawner.set_actor_label(f"Spawner_{kind}{len(camps)}")
+        spawner.set_folder_path("Camps")
+        spawner.set_editor_property("enemy_class", cls.static_class())
+        if tag:
+            spawner.set_editor_property("enemy_tag", tag)
+        spawner.set_editor_property("max_alive", camp_rng.randint(lo, hi))
+        spawner.set_editor_property("spawn_radius", 350.0)
+        spawner.set_editor_property("respawn_delay", camp_rng.uniform(18.0, 30.0))
+    unreal.log(f"PixelRPG: {len(camps)} monster camps: " + ", ".join(kind for _, _, kind in camps))
+
+    occupied = list(QUEST_CLEAR)                      # the village and the quest places
+    occupied += [(x, y, 450) for x, y, _ in camps]    # room for the camp's monsters to appear
 
     def is_free(x, y, radius):
-        return (terrain.path_weight(x, y) < 0.05 and math.hypot(x, y) < 7200
+        return (terrain.path_weight(x, y) < 0.05 and math.hypot(x, y) < 7200 * terrain.SCALE
                 and all((x - ox) ** 2 + (y - oy) ** 2 > (radius + r) ** 2 for ox, oy, r in occupied))
 
     # Forest: denser in clumps, mostly conifers with patches of autumn colour.
     count = 0
-    for i in range(2600):
-        x, y = rng.uniform(-6800, 6800), rng.uniform(-6800, 6800)
+    edge = 6800 * terrain.SCALE
+    for i in range(9000):
+        x, y = rng.uniform(-edge, edge), rng.uniform(-edge, edge)
         clump = terrain.noise(int(x // 900), int(y // 900))
         if rng.random() > 0.25 + clump * 0.75 or not is_free(x, y, 130):
             continue
@@ -653,19 +858,19 @@ def build_level(meshes, ground_material):
         occupied.append((x, y, 130))
         spawn(kind, x, y, yaw=rng.uniform(0, 360), scale=rng.uniform(0.85, 1.5), label=f"{kind[3:]}{i}")
         count += 1
-        if count >= 700:
+        if count >= 2100:
             break
 
-    for i in range(160):
-        x, y = rng.uniform(-6000, 6000), rng.uniform(-6000, 6000)
+    for i in range(560):
+        x, y = rng.uniform(-6000 * terrain.SCALE, 6000 * terrain.SCALE), rng.uniform(-6000 * terrain.SCALE, 6000 * terrain.SCALE)
         kind = "SM_Rock" if rng.random() < 0.45 else "SM_Bush"
         if is_free(x, y, 80):
             occupied.append((x, y, 80))
             spawn(kind, x, y, yaw=rng.uniform(0, 360), scale=rng.uniform(0.8, 1.6), label=f"{kind[3:]}{i}")
 
     # Ground cover near the start: no shadows, it only breaks up the ground.
-    for i in range(1300):
-        x, y = rng.uniform(-3600, 3600), rng.uniform(-3600, 3600)
+    for i in range(3200):
+        x, y = rng.uniform(-5600, 5600), rng.uniform(-5600, 5600)
         if terrain.path_weight(x, y) > 0.3:
             continue
         kind = "SM_Flowers" if rng.random() < 0.08 else "SM_Grass"
@@ -674,8 +879,8 @@ def build_level(meshes, ground_material):
     # Foliage: one foliage type per mesh, all instances added in one go.
     for name, transforms in instances.items():
         type_name = "FT_" + name[3:]
-        delete_if_exists(f"{PIXEL_DIR}/{type_name}")
-        foliage_type = asset_tools.create_asset(type_name, PIXEL_DIR, unreal.FoliageType_InstancedStaticMesh,
+        delete_if_exists(f"{FOLIAGE_DIR}/{type_name}")
+        foliage_type = asset_tools.create_asset(type_name, FOLIAGE_DIR, unreal.FoliageType_InstancedStaticMesh,
                                                 unreal.FoliageType_InstancedStaticMeshFactory())
         foliage_type.set_editor_property("mesh", meshes[name])
         foliage_type.set_editor_property("cast_shadow", INSTANCED_MESHES[name])
@@ -687,8 +892,56 @@ def build_level(meshes, ground_material):
     level_sub.save_current_level()
 
 
+def organize_content():
+    """Moves the assets of the old flat layout (/Game/Pixel, /Game/Meshes) into the folders above. Renaming keeps
+    every reference (the map, the materials of the meshes); the redirectors left behind are fixed up and removed.
+    Does nothing once the old folders are gone."""
+    moved = 0
+    for legacy in LEGACY_DIRS:
+        if not eal.does_directory_exist(legacy):
+            continue
+        for path in eal.list_assets(legacy, recursive=True, include_folder=False):
+            package = path.split(".")[0]
+            name = package.split("/")[-1]
+            asset = unreal.load_asset(path)
+            folder = None
+            if isinstance(asset, unreal.StaticMesh):
+                try:
+                    folder = mesh_dir(name)
+                except RuntimeError:
+                    pass
+            elif isinstance(asset, unreal.Texture):
+                folder = TEXTURE_DIR
+            elif isinstance(asset, unreal.FoliageType):
+                folder = FOLIAGE_DIR
+            elif isinstance(asset, (unreal.Material, unreal.MaterialParameterCollection)) and legacy == "/Game/Pixel":
+                folder = MATERIAL_DIR
+            if folder is None:
+                # Not part of the layout: materials the FBX importer made, leftovers of old experiments.
+                unreal.log(f"PixelRPG: removing unused {package}")
+                eal.delete_asset(package)
+            elif eal.does_asset_exist(f"{folder}/{name}"):
+                eal.delete_asset(package)
+            elif eal.rename_asset(package, f"{folder}/{name}"):
+                moved += 1
+            else:
+                raise RuntimeError(f"could not move {package} to {folder}")
+    if moved:
+        unreal.log(f"PixelRPG: moved {moved} assets into the content folders")
+
+
+def remove_legacy_dirs():
+    """The redirectors organize_content() leaves behind. Safe once the rest of main() has run: it saves the meshes with
+    their new materials, makes new materials, foliage types and the map, so nothing points at the old paths any more."""
+    for legacy in LEGACY_DIRS:
+        if eal.does_directory_exist(legacy):
+            eal.delete_directory(legacy)
+            unreal.log(f"PixelRPG: removed the old folder {legacy}")
+
+
 def main():
     global COLLECTION
+    organize_content()
     COLLECTION = build_parameter_collection()
     textures = import_textures()
     build_post_material()
@@ -697,16 +950,9 @@ def main():
     prop = build_surface_material("M_Prop", VERTEX_COLOR_CODE, textures["T_Detail"], 218.0, 0.6, local=True)
     build_zone_material()
     ground = build_surface_material("M_Terrain", TERRAIN_CODE, textures["T_Ground"], 256.0, 1.0, local=False, colour_map=textures["T_TerrainColor"])
-    delete_if_exists(f"{PIXEL_DIR}/M_Ground")
-    # Left over from the billboard sprite experiment.
-    for path in eal.list_assets(PIXEL_DIR, recursive=False):
-        name = path.split("/")[-1].split(".")[0]
-        if name.startswith(("MI_", "T_SM_", "M_Sprite")):
-            eal.delete_asset(path.split(".")[0])
-    for old in ["SM_Player", "SM_Slime", "SM_Companion", "SM_Villager", "SM_Terrain"] + TREES:   # replaced by pose sets / trunk + leaves / the landscape
-        delete_if_exists(f"{MESH_DIR}/{old}")
     meshes = import_meshes(surface, character, build_foliage_material(textures["T_Foliage"]), prop)
     build_level(meshes, ground)
+    remove_legacy_dirs()
     unreal.log("PixelRPG: asset setup finished")
 
 

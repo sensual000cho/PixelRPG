@@ -16,7 +16,7 @@ class UPixelQuestComponent;
  *           G mount / deploy companion, 1/2/3 order follow / hold / focus, T auto mode, F bolt, C empower,
  *           E interact (gather, talk), F5 save, F9 load,
  *           mouse look, Z/X zoom, V third person / top down (Left/Right rotate there), F1 toggle the pixel effect.
- * Command line: -PixelCombatTest fights on its own, -PixelQuestTest also plays through the quest.
+ * Command line: -PixelCombatTest fights on its own, -PixelQuestTest also plays through the quests.
  */
 UCLASS()
 class PIXELRPG_API APixelPlayerCharacter : public APixelCharacterBase
@@ -49,7 +49,10 @@ public:
 	bool GetNotice(FString& OutText) const;
 	bool GetDialogue(FString& OutSpeaker, FString& OutText) const;
 
-	/** Sets max health from the quest reward. bHeal also refills health (used when the reward is handed out). */
+	/** False for a weapon the game mode keeps locked (APixelGameMode::QuestLockedWeapons) until a quest unlocks it. */
+	bool IsWeaponAvailable(int32 Index) const;
+
+	/** Sets max health from the quest rewards. bHeal also refills health (used when a reward is handed out). */
 	void ApplyQuestBonus(bool bHeal);
 	void RestoreFromSave(const FVector& Location, float Health, int32 SavedWeaponIndex);
 
@@ -71,9 +74,9 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Combat")
 	float DodgeCooldown = 0.6f;
 
-	/** Degrees of camera rotation per unit of mouse movement. */
+	/** Degrees of camera rotation per unit of mouse movement. Changed in game with [ and ], kept in GameUserSettings.ini. */
 	UPROPERTY(EditAnywhere, Category = "Camera")
-	float MouseSensitivity = 0.6f;
+	float MouseSensitivity = 1.0f;
 
 	UPROPERTY(EditAnywhere, Category = "Combat")
 	float RespawnSeconds = 2.f;
@@ -83,13 +86,29 @@ protected:
 	virtual int32 GetPoseIndex() const override;
 
 private:
-	void SwapWeapon();
+	/** Switches to the next available weapon. False if there is no other one. */
+	bool SwapWeapon();
+	// The input actions that quests can ask for: each does the thing and tells the quest log when it worked.
+	void ToggleView();
+	void ToggleCompanionMount();
+	void ToggleCompanionAutoCast();
+	void CastCompanionBolt();
+	void CastCompanionEmpower();
 	/** Starts the next attack of the combo (or the weapon's only attack). */
 	void StartAttack();
 	void Respawn();
 	APixelInteractable* FindFocus() const;
 	/** What the -PixelQuestTest autoplay should walk to and use next, or null to just fight. */
 	APixelInteractable* FindQuestTestGoal() const;
+	/** What the autoplay should attack: the nearest enemy, skipping training dummies no quest asks for. */
+	APixelCharacterBase* FindAutoplayTarget() const;
+	/** -PixelQuestTest: does what the quests ask for that walking and fighting does not cover. */
+	void AutoplayQuestActions();
+	float NextAutoplayAction = 0.f;
+	FVector StuckCheckLocation = FVector::ZeroVector;
+	float NextStuckCheck = 0.f;
+	float DetourUntil = 0.f;
+	float DetourSide = 1.f;
 
 	UPROPERTY(VisibleAnywhere, Category = "World")
 	TObjectPtr<UPixelInventoryComponent> Inventory;

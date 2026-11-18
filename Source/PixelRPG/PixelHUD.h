@@ -12,4 +12,8 @@ class PIXELRPG_API APixelHUD : public AHUD
 
 public:
 	virtual void DrawHUD() override;
+
+	/** Enemy health bars are hidden beyond this distance from the player (cm). */
+	UPROPERTY(EditAnywhere, Category = "HUD")
+	float EnemyHealthBarRange = 1500.f;
 };

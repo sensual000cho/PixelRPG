@@ -10,6 +10,7 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
 #include "Kismet/KismetMaterialLibrary.h"
 #include "Kismet/KismetRenderingLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
@@ -65,7 +66,7 @@ APixelCameraRig::APixelCameraRig()
 	PP.bOverride_SceneFringeIntensity = true;
 	PP.SceneFringeIntensity = 0.f;
 
-	PostProcessMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Pixel/M_PixelPost.M_PixelPost")));
+	PostProcessMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Materials/M_PixelPost.M_PixelPost")));
 }
 
 void APixelCameraRig::BeginPlay()
@@ -84,7 +85,7 @@ void APixelCameraRig::BeginPlay()
 
 	// Props in front of the character are only cut away while playing: the switch is off in the asset,
 	// so the editor viewport shows everything, and this turns it on for this world alone.
-	if (UMaterialParameterCollection* Collection = LoadObject<UMaterialParameterCollection>(nullptr, TEXT("/Game/Pixel/MPC_Pixel.MPC_Pixel")))
+	if (UMaterialParameterCollection* Collection = LoadObject<UMaterialParameterCollection>(nullptr, TEXT("/Game/Materials/MPC_Pixel.MPC_Pixel")))
 	{
 		UKismetMaterialLibrary::SetScalarParameterValue(this, Collection, TEXT("SeeThrough"), 1.f);
 	}
@@ -422,13 +423,54 @@ void APixelCameraRig::UpdateCharacterPixels()
 		++Slot;
 	};
 
+	// There are more characters in the valley than grids. The player, its companion and the NPCs always get one,
+	// the rest go to the characters nearest the camera that are in front of it. The others get stencil 0 (drawn at
+	// full resolution, which only happens far away or off screen); before, a slot went to whoever came first, so an
+	// NPC could lose its grid from one frame to the next and blink between pixelated and smooth.
+	struct FCandidate
+	{
+		AActor* Actor;
+		FVector Feet;
+		double Priority;
+	};
+	TArray<FCandidate> Candidates;
+	const APlayerController* PC = GetWorld()->GetFirstPlayerController();
+	const APawn* PlayerPawn = PC ? PC->GetPawn() : nullptr;
+	auto Rank = [&](AActor* Actor, const FVector& Feet, bool bAlways)
+	{
+		const FVector Relative = Feet - CaptureLocation;
+		double Priority = Relative.Size();
+		if (FVector::DotProduct(Relative, ViewForward) <= 10.0)
+		{
+			Priority += 1e7; // behind the camera
+		}
+		Candidates.Add({ Actor, Feet, bAlways ? Priority - 1e9 : Priority });
+	};
 	for (TActorIterator<APixelCharacterBase> It(GetWorld()); It; ++It)
 	{
-		Assign(*It, It->GetFeetLocation());
+		Rank(*It, It->GetFeetLocation(), *It == PlayerPawn || It->TeamId == 0); // the player's team: player and companion
 	}
 	for (TActorIterator<APixelNpc> It(GetWorld()); It; ++It)
 	{
-		Assign(*It, It->GetActorLocation());
+		Rank(*It, It->GetActorLocation(), true);
+	}
+	Candidates.Sort([](const FCandidate& A, const FCandidate& B) { return A.Priority < B.Priority; });
+
+	for (const FCandidate& Candidate : Candidates)
+	{
+		if (Slot < MaxSlots)
+		{
+			Assign(Candidate.Actor, Candidate.Feet);
+			continue;
+		}
+		TInlineComponentArray<UPrimitiveComponent*> Components(Candidate.Actor);
+		for (UPrimitiveComponent* Component : Components)
+		{
+			if (Component->bRenderCustomDepth && Component->CustomDepthStencilValue != 0)
+			{
+				Component->SetCustomDepthStencilValue(0);
+			}
+		}
 	}
 	for (; Slot < MaxSlots; ++Slot)
 	{

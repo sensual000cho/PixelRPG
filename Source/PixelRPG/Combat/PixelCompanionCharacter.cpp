@@ -32,7 +32,7 @@ APixelCompanionCharacter::APixelCompanionCharacter()
 void APixelCompanionCharacter::BeginPlay()
 {
 	Super::BeginPlay();
-	LoadPoses(TEXT("SM_Companion"), 7);
+	LoadPoses(TEXT("/Game/Characters/Companion/SM_Companion"), 7);
 	AbilitySystem->GiveAbility(FGameplayAbilitySpec(UPixelAbility_Bolt::StaticClass(), 1));
 	AbilitySystem->GiveAbility(FGameplayAbilitySpec(UPixelAbility_Empower::StaticClass(), 1));
 }
@@ -195,14 +195,14 @@ float APixelCompanionCharacter::GetEmpowerCooldownFraction() const
 
 FString APixelCompanionCharacter::GetStateText() const
 {
-	if (IsDead()) { return TEXT("Downed"); }
-	if (bMounted) { return TEXT("Mounted"); }
-	if (bReturning) { return TEXT("Returning"); }
+	if (IsDead()) { return TEXT("쓰러짐"); }
+	if (bMounted) { return TEXT("탑승 중"); }
+	if (bReturning) { return TEXT("돌아오는 중"); }
 	switch (Order)
 	{
-	case EPixelCompanionOrder::Hold: return TEXT("Hold");
-	case EPixelCompanionOrder::Focus: return TEXT("Focus");
-	default: return TEXT("Follow");
+	case EPixelCompanionOrder::Hold: return TEXT("대기");
+	case EPixelCompanionOrder::Focus: return TEXT("집중 공격");
+	default: return TEXT("따라오기");
 	}
 }
 
@@ -359,7 +359,7 @@ void APixelProjectile::Launch(APixelCharacterBase* InSource, APixelCharacterBase
 	Target = InTarget;
 	Damage = InDamage;
 	Direction = (InTarget->GetActorLocation() - GetActorLocation()).GetSafeNormal();
-	if (UStaticMesh* BoltMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Meshes/SM_Bolt.SM_Bolt")))
+	if (UStaticMesh* BoltMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Effects/SM_Bolt.SM_Bolt")))
 	{
 		Mesh->SetStaticMesh(BoltMesh);
 	}

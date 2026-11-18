@@ -89,6 +89,15 @@ class Builder:
                 v.co *= 1.0 + rng.uniform(-jitter, jitter)
         return self._finish(r["verts"], color, smooth, self._matrix(loc, (0, 0, 0), scale))
 
+    def taper(self, bottom, top, height, loc, color, rot=(0, 0, 0)):
+        """Box whose sides lean: `bottom` and `top` are its (x, y) sizes, and it stands on `loc`."""
+        pts = [(sx * size[0] / 2, sy * size[1] / 2, z)
+               for size, z in ((bottom, 0.0), (top, height)) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+        v = [self.bm.verts.new(p) for p in pts]
+        for idx in [(3, 2, 1, 0), (4, 5, 6, 7), (0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]:
+            self.bm.faces.new([v[i] for i in idx])
+        return self._finish(v, color, False, self._matrix(loc, rot, (1, 1, 1)))
+
     def prism(self, length_x, half_width_y, height, loc, color):
         """Triangular prism (gable) lying along X, base centred on `loc`."""
         hx = length_x / 2
@@ -606,6 +615,183 @@ def make_bolt():
     return b.build()
 
 
+def facet(b, seed, cell=0.045):
+    """Finishes a blocky figure so it looks painted with a low-resolution texture: the surface is cut into
+    a grid of `cell` sized squares, and every square gets its own tone - broad lighter and darker patches,
+    speckle on top, lighter where the surface looks up and darker where it looks down."""
+    rng = random.Random(seed)
+    for axis in range(3):
+        low = min(v.co[axis] for v in b.bm.verts)
+        high = max(v.co[axis] for v in b.bm.verts)
+        normal = Vector([1.0 if i == axis else 0.0 for i in range(3)])
+        steps = int((high - low) / cell)
+        for step in range(1, steps + 1):
+            at = Vector((0.0, 0.0, 0.0))
+            at[axis] = low + step * cell + cell * 0.37      # off the box faces, which sit on round numbers
+            bmesh.ops.bisect_plane(b.bm, geom=b.bm.verts[:] + b.bm.edges[:] + b.bm.faces[:], plane_co=at, plane_no=normal)
+    b.bm.normal_update()
+    patches = {}
+    for face in b.bm.faces:
+        centre = face.calc_center_median()
+        key = tuple(int(math.floor(c / (cell * 3.0))) for c in centre)
+        if key not in patches:
+            patches[key] = rng.uniform(-0.11, 0.11)
+        speck = rng.uniform(-0.09, 0.09)
+        if rng.random() < 0.06:
+            speck += rng.choice((-0.22, 0.26))               # the odd dark or bright texel
+        tone = (1.0 + patches[key] + speck) * (1.0 + 0.22 * face.normal.z)
+        for loop in face.loops:
+            c = loop[b.col]
+            loop[b.col] = (min(1.0, c[0] * tone), min(1.0, c[1] * tone), min(1.0, c[2] * tone), 1.0)
+
+
+def make_goblin():
+    """Stocky goblin, about 1.25 m: big head, wide flat ears, heavy banded forearms and fists, short legs. Faces -Y."""
+    b = Builder("SM_Goblin")
+    skin, skin_dark, skin_light = (0.30, 0.40, 0.46), (0.18, 0.26, 0.31), (0.46, 0.56, 0.61)
+    cloth, band, dark, eye = (0.21, 0.29, 0.34), (0.74, 0.80, 0.83), (0.07, 0.10, 0.13), (0.82, 0.88, 0.90)
+    for sx in (-1, 1):
+        b.box((0.18, 0.30, 0.10), (sx * 0.14, -0.05, 0.05), skin_dark)                              # foot
+        b.taper((0.13, 0.15), (0.18, 0.20), 0.24, (sx * 0.13, 0.0, 0.09), skin)                     # leg
+        b.box((0.185, 0.205, 0.04), (sx * 0.13, 0.0, 0.17), band)                                   # ankle band
+    b.taper((0.50, 0.36), (0.42, 0.30), 0.22, (0, 0, 0.30), cloth)                                  # loincloth
+    b.box((0.18, 0.04, 0.26), (0, -0.185, 0.36), skin_dark)                                         # front flap
+    for z in (0.30, 0.37, 0.44):
+        b.box((0.05, 0.045, 0.045), (0, -0.19, z), band)
+    b.box((0.46, 0.34, 0.07), (0, 0, 0.535), dark)                                                  # belt
+    b.box((0.10, 0.04, 0.08), (0, -0.175, 0.535), band)
+    b.taper((0.42, 0.30), (0.54, 0.36), 0.30, (0, 0, 0.56), skin)                                   # chest
+    b.box((0.30, 0.04, 0.14), (0, -0.17, 0.74), skin_light)
+    b.box((0.60, 0.30, 0.10), (0, 0.01, 0.84), skin_dark)                                           # shoulders
+    for sx in (-1, 1):
+        shoulder = (sx * 0.34, 0, 0.84)
+        arm = (b.box((0.15, 0.16, 0.24), (sx * 0.36, 0, 0.70), skin)
+               + b.taper((0.23, 0.24), (0.16, 0.17), 0.26, (sx * 0.36, 0, 0.33), skin)              # forearm, wider at the wrist
+               + b.box((0.235, 0.245, 0.04), (sx * 0.36, 0, 0.38), band)
+               + b.box((0.215, 0.225, 0.04), (sx * 0.36, 0, 0.45), band)
+               + b.box((0.195, 0.205, 0.04), (sx * 0.36, 0, 0.52), band)
+               + b.box((0.25, 0.27, 0.21), (sx * 0.36, -0.01, 0.235), skin_dark)                    # fist
+               + b.box((0.26, 0.05, 0.05), (sx * 0.36, -0.13, 0.20), skin))                         # knuckles
+        b.rotate(arm, shoulder, (-8, -sx * 13, 0))
+    b.box((0.16, 0.16, 0.08), (0, 0, 0.90), skin_dark)                                              # neck
+    b.taper((0.40, 0.36), (0.46, 0.40), 0.30, (0, -0.01, 0.92), skin)                               # head
+    b.taper((0.46, 0.40), (0.28, 0.24), 0.11, (0, -0.01, 1.22), skin_light)                         # crown
+    b.box((0.09, 0.09, 0.11), (0, -0.23, 1.02), skin_light)                                         # nose
+    b.box((0.20, 0.04, 0.035), (0, -0.20, 0.955), dark)                                             # mouth
+    for sx in (-1, 1):
+        b.box((0.10, 0.03, 0.08), (sx * 0.12, -0.205, 1.09), eye)
+        b.box((0.05, 0.035, 0.05), (sx * 0.105, -0.21, 1.08), dark)
+        b.box((0.13, 0.04, 0.035), (sx * 0.12, -0.205, 1.15), skin_dark, rot=(0, -sx * 14, 0))      # brow
+        ear = (b.box((0.26, 0.07, 0.20), (sx * 0.34, 0.03, 1.10), skin)
+               + b.box((0.22, 0.05, 0.13), (sx * 0.55, 0.04, 1.15), skin_dark)
+               + b.box((0.10, 0.04, 0.07), (sx * 0.69, 0.04, 1.19), skin)
+               + b.box((0.20, 0.03, 0.10), (sx * 0.36, -0.01, 1.10), skin_dark))                    # inner ear
+        b.rotate(ear, (sx * 0.22, 0.03, 1.08), (0, -sx * 16, sx * 10))
+    facet(b, seed=11)
+    return b.build()
+
+
+def make_samurai():
+    """Armoured foot soldier, about 1.8 m: helmet with a neck guard, banded shoulder plates, a long front
+    apron over the legs. Faces -Y."""
+    b = Builder("SM_Samurai")
+    plate, plate_dark, plate_light = (0.29, 0.38, 0.44), (0.15, 0.22, 0.27), (0.50, 0.60, 0.65)
+    band, dark, skin = (0.76, 0.82, 0.85), (0.06, 0.09, 0.12), (0.56, 0.62, 0.64)
+    for sx in (-1, 1):
+        b.box((0.15, 0.30, 0.10), (sx * 0.13, -0.05, 0.05), plate_dark)                             # foot
+        b.taper((0.12, 0.14), (0.17, 0.19), 0.44, (sx * 0.13, 0, 0.09), plate)                      # greave
+        b.box((0.18, 0.06, 0.12), (sx * 0.13, -0.10, 0.50), plate_light)                            # knee
+        b.box((0.19, 0.21, 0.36), (sx * 0.13, 0, 0.70), plate_dark)                                 # thigh
+        side = b.taper((0.20, 0.26), (0.17, 0.24), 0.34, (sx * 0.25, 0, 0.60), plate)               # side skirt plate
+        side += b.box((0.21, 0.27, 0.035), (sx * 0.25, 0, 0.66), band)
+        side += b.box((0.20, 0.265, 0.035), (sx * 0.25, 0, 0.78), band)
+        b.rotate(side, (sx * 0.22, 0, 0.94), (0, -sx * 9, 0))
+    b.box((0.46, 0.30, 0.14), (0, 0, 0.95), plate_dark)                                             # hips
+    b.box((0.22, 0.05, 0.56), (0, -0.165, 0.70), plate_dark)                                        # front apron
+    for z in (0.47, 0.56, 0.65, 0.74, 0.83, 0.92):
+        b.box((0.20, 0.055, 0.04), (0, -0.17, z), band if int(z * 100) % 2 else plate_light)
+    b.box((0.06, 0.06, 0.52), (0, -0.175, 0.70), plate)
+    b.box((0.48, 0.32, 0.07), (0, 0, 1.04), dark)                                                   # sash
+    b.taper((0.42, 0.28), (0.56, 0.34), 0.42, (0, 0, 1.07), plate)                                  # cuirass
+    for z in (1.16, 1.25, 1.34):
+        b.box((0.44 + (z - 1.16) * 0.5, 0.04, 0.04), (0, -0.155 - (z - 1.16) * 0.06, z), plate_dark)
+    b.box((0.40, 0.04, 0.07), (0, -0.175, 1.42), plate_light)                                       # collar plate
+    for sx in (-1, 1):
+        guard = b.taper((0.22, 0.30), (0.16, 0.26), 0.30, (sx * 0.39, 0, 1.16), plate)              # shoulder plate
+        for z in (1.21, 1.29, 1.37):
+            guard += b.box((0.225 - (z - 1.21) * 0.25, 0.305, 0.035), (sx * 0.39, 0, z), band)
+        guard += b.box((0.05, 0.10, 0.20), (sx * 0.30, 0.10, 1.56), plate_dark, rot=(0, -sx * 20, 0))  # raised back fin
+        b.rotate(guard, (sx * 0.30, 0, 1.46), (0, -sx * 16, 0))
+        shoulder = (sx * 0.34, 0, 1.42)
+        arm = (b.box((0.13, 0.15, 0.30), (sx * 0.36, 0, 1.18), plate_dark)
+               + b.taper((0.14, 0.16), (0.19, 0.21), 0.30, (sx * 0.36, 0, 0.76), plate)             # gauntlet
+               + b.box((0.195, 0.215, 0.04), (sx * 0.36, 0, 1.03), band)
+               + b.box((0.13, 0.15, 0.15), (sx * 0.36, 0, 0.69), plate_dark))                       # hand
+        b.rotate(arm, shoulder, (-5, -sx * 7, 0))
+    b.box((0.13, 0.13, 0.08), (0, 0, 1.51), plate_dark)                                             # neck
+    b.box((0.21, 0.22, 0.24), (0, -0.04, 1.65), skin)                                               # face
+    for sx in (-1, 1):
+        b.box((0.055, 0.03, 0.03), (sx * 0.055, -0.155, 1.69), dark)                                # eyes
+    b.box((0.03, 0.04, 0.06), (0, -0.16, 1.645), (0.44, 0.50, 0.52))                                # nose
+    b.box((0.09, 0.03, 0.025), (0, -0.155, 1.585), dark)                                            # mouth
+    b.taper((0.50, 0.44), (0.30, 0.30), 0.20, (0, 0.07, 1.52), plate_dark)                          # neck guard, open at the front
+    b.taper((0.52, 0.46), (0.50, 0.44), 0.03, (0, 0.07, 1.49), band)
+    b.taper((0.30, 0.32), (0.22, 0.24), 0.14, (0, 0.0, 1.76), plate)                                # helmet bowl
+    b.box((0.32, 0.34, 0.04), (0, 0.0, 1.765), plate_light)                                         # helmet rim
+    b.box((0.26, 0.10, 0.03), (0, -0.20, 1.775), plate_dark)                                        # peak
+    b.box((0.08, 0.08, 0.05), (0, 0.0, 1.92), plate_light)                                          # top knob
+    facet(b, seed=23)
+    return b.build()
+
+
+def make_knight():
+    """Heavy knight, about 2 m: flat-topped great helm with four eye holes, layered spiked shoulder plates,
+    flared gauntlets, a long skirt of plates. Faces -Y."""
+    b = Builder("SM_Knight")
+    steel, steel_dark, steel_light, shine = (0.47, 0.47, 0.48), (0.24, 0.24, 0.26), (0.66, 0.66, 0.67), (0.86, 0.86, 0.87)
+    dark = (0.05, 0.05, 0.06)
+    for sx in (-1, 1):
+        b.box((0.22, 0.36, 0.13), (sx * 0.21, -0.05, 0.065), steel_dark)                            # boot
+        b.box((0.18, 0.12, 0.08), (sx * 0.21, -0.20, 0.09), steel_light)                            # toe cap
+        b.taper((0.17, 0.19), (0.23, 0.25), 0.36, (sx * 0.21, 0, 0.12), steel)                      # greave
+        b.taper((0.27, 0.29), (0.21, 0.23), 0.10, (sx * 0.21, 0, 0.44), steel_light)                # knee flare
+        b.box((0.23, 0.25, 0.30), (sx * 0.21, 0, 0.66), steel_dark)                                 # thigh
+    b.taper((0.70, 0.50), (0.52, 0.40), 0.58, (0, 0.01, 0.56), steel)                               # skirt
+    b.box((0.22, 0.04, 0.62), (0, -0.235, 0.86), steel_light)                                       # front panel
+    b.box((0.03, 0.045, 0.62), (0, -0.24, 0.86), steel_dark)                                        # its seam
+    for sx in (-1, 1):
+        b.box((0.20, 0.05, 0.36), (sx * 0.27, -0.215, 0.80), steel_dark, rot=(-6, 0, sx * 4))       # hip plates
+    b.box((0.56, 0.44, 0.09), (0, 0, 1.17), steel_dark)                                             # belt
+    b.box((0.12, 0.04, 0.10), (0, -0.225, 1.17), shine)
+    b.taper((0.52, 0.40), (0.70, 0.48), 0.44, (0, 0, 1.21), steel)                                  # breastplate
+    b.taper((0.36, 0.05), (0.50, 0.05), 0.30, (0, -0.235, 1.30), steel_light)                       # its raised front
+    b.box((0.03, 0.055, 0.30), (0, -0.24, 1.45), steel_dark)
+    b.taper((0.74, 0.50), (0.40, 0.36), 0.10, (0, 0, 1.65), steel_dark)                             # collar
+    for sx in (-1, 1):
+        guard = (b.taper((0.44, 0.50), (0.36, 0.42), 0.13, (sx * 0.55, 0, 1.40), steel)             # shoulder plates, largest lowest
+                 + b.taper((0.38, 0.46), (0.30, 0.38), 0.13, (sx * 0.51, 0, 1.53), steel_light)
+                 + b.taper((0.30, 0.40), (0.20, 0.30), 0.11, (sx * 0.47, 0, 1.66), steel)
+                 + b.cone(0.085, 0.0, 0.26, (sx * 0.62, 0, 1.56), steel_light, segments=4, rot=(0, sx * 62, 0)))   # spike
+        b.rotate(guard, (sx * 0.36, 0, 1.62), (0, -sx * 10, 0))
+        shoulder = (sx * 0.46, 0, 1.56)
+        arm = (b.box((0.19, 0.21, 0.30), (sx * 0.50, 0, 1.30), steel_dark)
+               + b.box((0.22, 0.24, 0.10), (sx * 0.50, 0, 1.13), steel_light)                       # elbow
+               + b.taper((0.20, 0.22), (0.34, 0.36), 0.28, (sx * 0.50, 0, 0.84), steel)             # flared gauntlet
+               + b.taper((0.36, 0.38), (0.34, 0.36), 0.035, (sx * 0.50, 0, 1.12), shine)
+               + b.box((0.20, 0.22, 0.19), (sx * 0.50, -0.01, 0.75), steel_dark))                   # fist
+        b.rotate(arm, shoulder, (-4, -sx * 9, 0))
+    b.box((0.18, 0.18, 0.08), (0, 0, 1.75), steel_dark)                                             # neck
+    b.taper((0.30, 0.32), (0.35, 0.37), 0.38, (0, -0.01, 1.77), steel)                              # great helm
+    b.taper((0.35, 0.37), (0.24, 0.26), 0.06, (0, -0.01, 2.15), steel_light)                        # its cap
+    b.box((0.03, 0.03, 0.34), (0, -0.185, 1.95), steel_light)                                       # nose ridge
+    b.box((0.36, 0.03, 0.035), (0, -0.19, 2.05), steel_dark)                                        # brow band
+    for sx in (-1, 1):
+        for z in (1.97, 1.90):
+            b.box((0.06, 0.03, 0.045), (sx * 0.075, -0.18, z), dark)                                # eye holes
+    facet(b, seed=37)
+    return b.build()
+
+
 def make_herb():
     """Gatherable plant: broad pale leaves around a glowing bud."""
     b = Builder("SM_Herb")
@@ -712,7 +898,8 @@ def main():
         objs += make_tree()
     objs += [f() for f in (make_rock, make_bush,
                            make_grass, make_flowers, make_crystal, make_house, make_sword, make_spear,
-                           make_slash, make_ring, make_bolt, make_herb, make_ore, make_mountain)]
+                           make_slash, make_ring, make_bolt, make_herb, make_ore, make_mountain,
+                           make_goblin, make_samurai, make_knight)]
     for o in objs:
         export(o)
     print("PixelRPG: exported", len(objs), "meshes")

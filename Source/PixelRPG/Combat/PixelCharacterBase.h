@@ -65,6 +65,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Combat")
 	float StunOnHitSeconds = 0.f;
 
+	/** How far hits throw it back: 1 = full knockback, 0 = immovable (heavy monsters). */
+	UPROPERTY(EditAnywhere, Category = "Combat")
+	float KnockbackScale = 1.f;
+
 	/**
 	 * The model is only ever shown from this many angles around it, like the frames of a sprite sheet:
 	 * it turns in steps, and keeps the same side to the camera while the camera circles. 0 = turn freely.
@@ -76,7 +80,8 @@ protected:
 	virtual void HandleDeath(AActor* Killer);
 	void SetBodyMesh(const TCHAR* AssetPath);
 	/**
-	 * Flip-book animation: loads /Game/Meshes/<Prefix>_00, _01, ... (one model per pose) and shows the
+	 * Flip-book animation: loads <Prefix>_00, _01, ... (one model per pose; Prefix is a package path such as
+	 * /Game/Characters/Hero/SM_Hero, see the folders in Tools/setup_pixel_assets.py) and shows the
 	 * one GetPoseIndex() names every frame.
 	 */
 	void LoadPoses(const TCHAR* Prefix, int32 Count);

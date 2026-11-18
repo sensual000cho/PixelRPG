@@ -22,7 +22,9 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 
 	/** True from the moment it starts winding up until the tackle is over: the HUD shows a warning mark. */
-	bool IsWarning() const { return State == EState::Telegraph || State == EState::Charge; }
+	virtual bool IsWarning() const { return State == EState::Telegraph || State == EState::Charge; }
+	/** Height above the feet at which the HUD draws the warning mark: just over the head. */
+	virtual float GetWarningHeight() const { return 78.f; }
 
 	UPROPERTY(EditAnywhere, Category = "AI")
 	float AggroRange = 1100.f;
@@ -45,17 +47,6 @@ public:
 	UPROPERTY(EditAnywhere, Category = "AI")
 	float TackleRadius = 72.f;
 
-	/** Radius of the warning hoops, and how high their centres hang above the ground. */
-	UPROPERTY(EditAnywhere, Category = "AI")
-	float RingRadius = 24.5f;
-
-	UPROPERTY(EditAnywhere, Category = "AI")
-	float RingHeight = 56.f;
-
-	/** How fast the hoops drift from the enemy towards its target, in world units per second. */
-	UPROPERTY(EditAnywhere, Category = "AI")
-	float RingDriftSpeed = 36.f;
-
 	UPROPERTY(EditAnywhere, Category = "AI")
 	float TelegraphSeconds = 0.65f;
 
@@ -66,33 +57,36 @@ protected:
 	virtual void HandleDeath(AActor* Killer) override;
 	virtual int32 GetPoseIndex() const override;
 
-private:
-	enum class EState : uint8 { Idle, Chase, Telegraph, Charge, Recover };
+	/**
+	 * Flip-book models loaded in BeginPlay: <PosePrefix>_00 ... Every enemy kind uses the same seven
+	 * poses (see GetPoseIndex), so a new monster only needs its own models and numbers, not its own AI.
+	 */
+	FString PosePrefix = TEXT("/Game/Characters/Enemies/Slime/SM_Slime");
+	int32 PoseCount = 7;
 
-	/** Sets the line the hoops are on: from here, Length along Direction. */
-	void AimTackleZone(const FVector& Direction, float Length);
-	/** Places the hoops along that line, a little further towards the target every frame. */
-	void UpdateTackleZone(float DeltaSeconds);
-	void HideTackleZone();
-
-	FVector ZoneOrigin = FVector::ZeroVector;
-	FVector ZoneDirection = FVector::ForwardVector;
-	float ZoneLength = 0.f;
-	/** How far the hoops have drifted since they appeared. */
-	float ZoneDrift = 0.f;
+	// Building blocks for enemies with their own attack pattern (APixelMushroomEnemy).
 
 	/**
-	 * Red hoops hanging in the air between the enemy and its target, drifting slowly towards the target.
-	 * The line follows the aim while the enemy winds up and stays where it is during the charge.
+	 * Closest hostile it can attack (the player, or the companion on the ground) within MaxDistance, or null.
+	 * Also keeps the fight small: an enemy that is not fighting yet joins (once the target comes within AggroRange)
+	 * only while fewer than APixelGameMode::MaxEngagedEnemies are; until then it gets null and waits where it is.
+	 * Hitting it makes it join anyway.
 	 */
-	UPROPERTY(VisibleAnywhere, Category = "AI")
-	TArray<TObjectPtr<UStaticMeshComponent>> TackleRings;
+	const APixelCharacterBase* FindTarget(float MaxDistance) const;
 
-	/** Damages and throws back the first hostile the body touches. False while nothing is touched. */
+	/** True while it is one of the enemies fighting (see FindTarget). */
+	bool IsEngaged() const { return bEngaged; }
+	/** Damages and throws back (along ChargeDirection) the first hostile the body touches. False while nothing is touched. */
 	bool TryTackleHit();
 
 	FVector ChargeDirection = FVector::ForwardVector;
 
+private:
+	enum class EState : uint8 { Idle, Chase, Telegraph, Charge, Recover };
+
 	EState State = EState::Idle;
 	float StateTime = 0.f;
+
+	/** Set and cleared by FindTarget (mutable because subclasses call it as a query). */
+	mutable bool bEngaged = false;
 };

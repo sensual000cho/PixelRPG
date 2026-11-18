@@ -66,7 +66,8 @@ void APixelHUD::DrawHUD()
 	for (TActorIterator<APixelCharacterBase> It(GetWorld()); It; ++It)
 	{
 		const APixelCharacterBase* Character = *It;
-		if (Character->TeamId == Player->TeamId || Character->IsDead() || Character->GetHealth() >= Character->GetMaxHealth())
+		if (Character->TeamId == Player->TeamId || Character->IsDead() || Character->GetHealth() >= Character->GetMaxHealth()
+			|| FVector::DistSquared(Character->GetActorLocation(), Player->GetActorLocation()) > FMath::Square(EnemyHealthBarRange))
 		{
 			continue;
 		}
@@ -83,7 +84,7 @@ void APixelHUD::DrawHUD()
 	for (TActorIterator<APixelEnemyCharacter> It(GetWorld()); It; ++It)
 	{
 		FVector2D Pixel;
-		if (It->IsDead() || !It->IsWarning() || !Rig->WorldToTargetPixel(It->GetFeetLocation() + FVector(0.f, 0.f, 78.f), Pixel))
+		if (It->IsDead() || !It->IsWarning() || !Rig->WorldToTargetPixel(It->GetFeetLocation() + FVector(0.f, 0.f, It->GetWarningHeight()), Pixel))
 		{
 			continue;
 		}
@@ -134,7 +135,7 @@ void APixelHUD::DrawHUD()
 		Player->IsDead() ? FLinearColor(0.3f, 0.3f, 0.3f) : FLinearColor(0.25f, 0.8f, 0.3f));
 
 	const APixelGameMode* GameMode = GetWorld()->GetAuthGameMode<APixelGameMode>();
-	const FString Line = FString::Printf(TEXT("%s    Kills %d"), *Player->GetWeapon().Name, GameMode ? GameMode->GetKillCount() : 0);
+	const FString Line = FString::Printf(TEXT("%s    처치 %d"), *PixelQuestCatalog::GetItemName(FName(*Player->GetWeapon().Name)), GameMode ? GameMode->GetKillCount() : 0);
 	FCanvasTextItem Text(Margin + FVector2D(0.0, 10.0 * Scale), FText::FromString(Line), GEngine->GetMediumFont(), FLinearColor::White);
 	Text.EnableShadow(FLinearColor::Black);
 	Canvas->DrawItem(Text);
@@ -148,9 +149,9 @@ void APixelHUD::DrawHUD()
 		DrawBar(Row + FVector2D(54.0 * Scale, 0.0), 14.f, 4.f, 1.f - Companion->GetBoltCooldownFraction(), FLinearColor(0.6f, 0.95f, 1.f));
 		DrawBar(Row + FVector2D(72.0 * Scale, 0.0), 14.f, 4.f, 1.f - Companion->GetEmpowerCooldownFraction(), FLinearColor(0.95f, 0.8f, 0.3f));
 
-		const FString State = FString::Printf(TEXT("Companion: %s   %s%s"), *Companion->GetStateText(),
-			Companion->IsAutoCast() ? TEXT("AUTO") : TEXT("MANUAL"),
-			Player->GetAttackPower() > 1.01f ? TEXT("   EMPOWERED") : TEXT(""));
+		const FString State = FString::Printf(TEXT("동료: %s   %s%s"), *Companion->GetStateText(),
+			Companion->IsAutoCast() ? TEXT("자동 시전") : TEXT("수동 시전"),
+			Player->GetAttackPower() > 1.01f ? TEXT("   강화 중") : TEXT(""));
 		FCanvasTextItem CompanionText(Row + FVector2D(0.0, 7.0 * Scale), FText::FromString(State), GEngine->GetMediumFont(), FLinearColor::White);
 		CompanionText.EnableShadow(FLinearColor::Black);
 		Canvas->DrawItem(CompanionText);
@@ -160,7 +161,7 @@ void APixelHUD::DrawHUD()
 	FString Bag;
 	for (const TPair<FName, int32>& Item : Player->GetInventory()->GetItems())
 	{
-		Bag += FString::Printf(TEXT("%s%s %d"), Bag.IsEmpty() ? TEXT("") : TEXT("    "), *Item.Key.ToString(), Item.Value);
+		Bag += FString::Printf(TEXT("%s%s %d"), Bag.IsEmpty() ? TEXT("") : TEXT("    "), *PixelQuestCatalog::GetItemName(Item.Key), Item.Value);
 	}
 	if (!Bag.IsEmpty())
 	{
@@ -172,8 +173,9 @@ void APixelHUD::DrawHUD()
 	Player->GetQuest()->GetTrackerLines(Tracker);
 	for (int32 Index = 0; Index < Tracker.Num(); ++Index)
 	{
-		DrawLine(FVector2D(Canvas->ClipX - Margin.X - 250.0, Margin.Y + Index * 20.0), Tracker[Index], GEngine->GetMediumFont(),
-			Index == 0 ? FLinearColor(1.f, 0.85f, 0.2f) : FLinearColor::White, false);
+		// Quest titles in gold, their objective lines (indented) in white.
+		DrawLine(FVector2D(Canvas->ClipX - Margin.X - 300.0, Margin.Y + Index * 20.0), Tracker[Index], GEngine->GetMediumFont(),
+			Tracker[Index].StartsWith(TEXT("  ")) ? FLinearColor::White : FLinearColor(1.f, 0.85f, 0.2f), false);
 	}
 
 	// Interaction prompt, dialogue and pop-up notice, bottom centre.
@@ -204,24 +206,24 @@ void APixelHUD::DrawHUD()
 	}
 	if (GameMode && GetWorld()->GetTimeSeconds() - GameMode->GetLastSaveTime() < 1.5f)
 	{
-		DrawLine(FVector2D(Canvas->ClipX - Margin.X - 60.0, Canvas->ClipY - Margin.Y - 14.0), TEXT("Saved"), GEngine->GetSmallFont(), FLinearColor(1.f, 1.f, 1.f, 0.8f), false);
+		DrawLine(FVector2D(Canvas->ClipX - Margin.X - 60.0, Canvas->ClipY - Margin.Y - 14.0), TEXT("저장됨"), GEngine->GetSmallFont(), FLinearColor(1.f, 1.f, 1.f, 0.8f), false);
 	}
 
 	FCanvasTextItem Help2(FVector2D(Margin.X, Canvas->ClipY - Margin.Y - 30.0),
-		FText::FromString(TEXT("E interact   G mount/deploy   1 follow   2 hold   3 focus   T auto   F bolt   C empower   F5 save   F9 load")),
+		FText::FromString(TEXT("E 상호작용   G 태우기/내리기   1 따라오기   2 대기   3 집중   T 자동 시전   F 볼트   C 강화   F5 저장   F9 불러오기")),
 		GEngine->GetSmallFont(), FLinearColor(1.f, 1.f, 1.f, 0.8f));
 	Help2.EnableShadow(FLinearColor::Black);
 	Canvas->DrawItem(Help2);
 
 	FCanvasTextItem Help(FVector2D(Margin.X, Canvas->ClipY - Margin.Y - 14.0),
-		FText::FromString(TEXT("WASD move   Mouse look   LMB/J attack   Space dodge   Tab weapon   Z/X zoom   V view")),
+		FText::FromString(TEXT("WASD 이동   마우스 시점   좌클릭/J 공격   Space 구르기   Tab 무기 교체   Z/X 줌   [ / ] 마우스 감도   V 시점 전환")),
 		GEngine->GetSmallFont(), FLinearColor(1.f, 1.f, 1.f, 0.8f));
 	Help.EnableShadow(FLinearColor::Black);
 	Canvas->DrawItem(Help);
 
 	if (Player->IsDead())
 	{
-		FCanvasTextItem Dead(FVector2D(Canvas->ClipX * 0.5, Canvas->ClipY * 0.4), FText::FromString(TEXT("DEFEATED")), GEngine->GetLargeFont(), FLinearColor(0.9f, 0.2f, 0.2f));
+		FCanvasTextItem Dead(FVector2D(Canvas->ClipX * 0.5, Canvas->ClipY * 0.4), FText::FromString(TEXT("쓰러졌다")), GEngine->GetLargeFont(), FLinearColor(0.9f, 0.2f, 0.2f));
 		Dead.bCentreX = true;
 		Dead.EnableShadow(FLinearColor::Black);
 		Canvas->DrawItem(Dead);
