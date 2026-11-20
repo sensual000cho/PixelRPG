@@ -98,6 +98,11 @@ protected:
 	float GetWalkTime() const { return WalkTime; }
 	/** Phase of the running attack animation: 0 wind-up, 1 strike, 2 recovery, or -1 when not attacking. */
 	int32 GetAttackPhase() const;
+	/** Seconds since the running attack started (-1 when not attacking), and that attack's timings. */
+	float GetAttackVisualTime() const { return AttackVisualTime; }
+	const FPixelWeaponDef& GetAttackVisualWeapon() const { return AttackVisualWeapon; }
+	/** Seconds left of the flinch after a hit (0 when not hurt). */
+	float GetHurtTimeLeft() const { return HurtTimeLeft; }
 
 	UPROPERTY(VisibleAnywhere, Category = "Combat")
 	TObjectPtr<UAbilitySystemComponent> AbilitySystem;
@@ -132,6 +137,9 @@ protected:
 
 	/** Height of the weapon hand above the feet; the swing and the swoosh happen at this height. */
 	float HandHeight = 100.f;
+
+	/** Bounce the body mesh while walking. Off for characters whose walk animation moves the body itself (the rigged hero). */
+	bool bHopWhileWalking = true;
 
 	/** Extra squash applied by subclasses (enemy telegraph). 0 = none, 1 = fully squashed. */
 	float ExtraSquash = 0.f;

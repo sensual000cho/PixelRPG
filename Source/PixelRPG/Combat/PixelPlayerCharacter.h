@@ -7,6 +7,8 @@
 class APixelCameraRig;
 class APixelCompanionCharacter;
 class APixelInteractable;
+class UAnimSequence;
+class USkeletalMeshComponent;
 class UPixelInventoryComponent;
 class UPixelQuestComponent;
 
@@ -81,11 +83,33 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Combat")
 	float RespawnSeconds = 2.f;
 
+	/**
+	 * The rigged hero's animations are shown at this many frames per second, like hand-drawn sprite frames
+	 * (they are keyed at 24). 0 = smooth.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Visual")
+	float AnimFrameRate = 15.f;
+
 protected:
 	virtual void HandleDeath(AActor* Killer) override;
 	virtual int32 GetPoseIndex() const override;
 
 private:
+	/** Picks the hero's animation and its frame from what it is doing (attack phase, dodge, hurt, walk, idle). */
+	void UpdateBodyAnimation();
+	UAnimSequence* FindAnim(const FString& Name) const;
+
+	/** The rigged hero model (SK_Hero, from Desktop/Project_PixelRPG/Hero/make_hero.py). Replaces the flip-book BodyMesh. */
+	UPROPERTY(VisibleAnywhere, Category = "Visual")
+	TObjectPtr<USkeletalMeshComponent> BodySkeleton;
+
+	/** A_Hero_<Name> by name (Idle_Sword, Run_Spear, Combo1, ...). */
+	UPROPERTY(Transient)
+	TMap<FString, TObjectPtr<UAnimSequence>> BodyAnims;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequence> ShownAnim;
+
 	/** Switches to the next available weapon. False if there is no other one. */
 	bool SwapWeapon();
 	/** After a Tab that did nothing: tells the player which quest unlocks the locked weapon. */

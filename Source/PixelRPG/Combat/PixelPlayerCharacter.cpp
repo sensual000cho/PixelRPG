@@ -1,6 +1,9 @@
 #include "Combat/PixelPlayerCharacter.h"
 
 #include "AbilitySystemComponent.h"
+#include "Animation/AnimSequence.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Engine/SkeletalMesh.h"
 #include "Combat/PixelAbility_Melee.h"
 #include "Combat/PixelAttributeSet.h"
 #include "Combat/PixelCompanionCharacter.h"
@@ -29,7 +32,17 @@ APixelPlayerCharacter::APixelPlayerCharacter()
 	TeamId = 0;
 	StartingHealth = BaseHealth;
 	bWeaponInBody = true;
+	bHopWhileWalking = false; // the run animation bounces the body
 	HandHeight = 70.f;
+
+	BodySkeleton = CreateDefaultSubobject<USkeletalMeshComponent>(TEXT("BodySkeleton"));
+	BodySkeleton->SetupAttachment(VisualRoot);
+	BodySkeleton->SetRelativeRotation(BodyMesh->GetRelativeRotation()); // same -90 yaw as the other character models
+	BodySkeleton->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	BodySkeleton->SetRenderCustomDepth(true); // drawn in big pixels with an outline, like every character
+	BodySkeleton->SetReceivesDecals(false);
+	BodySkeleton->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+	BodySkeleton->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 
 	Inventory = CreateDefaultSubobject<UPixelInventoryComponent>(TEXT("Inventory"));
 	Quest = CreateDefaultSubobject<UPixelQuestComponent>(TEXT("Quest"));
@@ -88,7 +101,32 @@ void APixelPlayerCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
-	LoadPoses(TEXT("/Game/Characters/Hero/SM_Hero"), 22 + SwordCombo.Num() * 3);
+	if (USkeletalMesh* Hero = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Characters/Hero/SK_Hero.SK_Hero")))
+	{
+		BodySkeleton->SetSkeletalMeshAsset(Hero);
+		BodySkeleton->SetAnimationMode(EAnimationMode::AnimationSingleNode);
+		BodyMaterial = BodySkeleton->CreateDynamicMaterialInstance(0); // the hit flash (APixelCharacterBase)
+		BodyMesh->SetVisibility(false);
+		for (const TCHAR* WeaponName : { TEXT("Sword"), TEXT("Spear") })
+		{
+			for (const TCHAR* Kind : { TEXT("Idle"), TEXT("Run"), TEXT("Attack"), TEXT("Dodge"), TEXT("Hurt") })
+			{
+				const FString Name = FString::Printf(TEXT("%s_%s"), Kind, WeaponName);
+				BodyAnims.Add(Name, LoadObject<UAnimSequence>(nullptr, *FString::Printf(TEXT("/Game/Characters/Hero/Anims/A_Hero_%s.A_Hero_%s"), *Name, *Name)));
+			}
+		}
+		for (int32 Step = 1; Step <= SwordCombo.Num(); ++Step)
+		{
+			BodyAnims.Add(FString::Printf(TEXT("Combo%d"), Step),
+				LoadObject<UAnimSequence>(nullptr, *FString::Printf(TEXT("/Game/Characters/Hero/Anims/A_Hero_Combo%d.A_Hero_Combo%d"), Step, Step)));
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("PixelPlayer: SK_Hero not found, using the old flip-book poses. Run Tools/setup_pixel_assets.py."));
+		BodySkeleton->SetVisibility(false);
+		LoadPoses(TEXT("/Game/Characters/Hero/SM_Hero"), 22 + SwordCombo.Num() * 3);
+	}
 	GConfig->GetFloat(TEXT("PixelRPG.Controls"), TEXT("MouseSensitivity"), MouseSensitivity, GGameUserSettingsIni);
 	AbilitySystem->GiveAbility(FGameplayAbilitySpec(UPixelAbility_Dodge::StaticClass(), 1));
 	SpawnLocation = GetActorLocation();
@@ -132,6 +170,81 @@ int32 APixelPlayerCharacter::GetPoseIndex() const
 	}
 	return GetWalkTime() > 0.f ? Base + 2 + static_cast<int32>(GetWalkTime() * 9.f) % 4
 		: Base + static_cast<int32>(GetAnimTime() * 1.6f) % 2;
+}
+
+UAnimSequence* APixelPlayerCharacter::FindAnim(const FString& Name) const
+{
+	const TObjectPtr<UAnimSequence>* Found = BodyAnims.Find(Name);
+	return Found ? Found->Get() : nullptr;
+}
+
+void APixelPlayerCharacter::UpdateBodyAnimation()
+{
+	if (!BodySkeleton->GetSkeletalMeshAsset())
+	{
+		return;
+	}
+	// The base class squashes / shrinks the (hidden) flip-book mesh for dashes and death: follow it.
+	BodySkeleton->SetRelativeLocation(BodyMesh->GetRelativeLocation());
+	BodySkeleton->SetRelativeScale3D(BodyMesh->GetRelativeScale3D());
+
+	// Every one-shot animation is shown over the time the game gives that action, as Alpha 0..1;
+	// loops run on their own clock. The attack animations are keyed (at 24 fps) as: frame 0 guard,
+	// 6 wound up, 10 strike done, 20 back in guard, and each part is stretched over its attack phase.
+	const FString WeaponName = WeaponIndex == 1 ? TEXT("Spear") : TEXT("Sword");
+	FString Name;
+	float Time = 0.f;
+	float Alpha = -1.f;
+	if (IsDead() || IsHurt())
+	{
+		Name = TEXT("Hurt_") + WeaponName;
+		Alpha = IsDead() ? 1.f : 1.f - GetHurtTimeLeft() / 0.28f;
+	}
+	else if (HasStateTag(PixelTags::State_Dodging))
+	{
+		Name = TEXT("Dodge_") + WeaponName;
+		Alpha = (GetWorld()->GetTimeSeconds() - LastDodgeTime) / FMath::Max(GetDefault<UPixelAbility_Dodge>()->Duration, 0.05f);
+	}
+	else if (GetAttackVisualTime() >= 0.f)
+	{
+		Name = ComboStep > 0 ? FString::Printf(TEXT("Combo%d"), ComboStep) : TEXT("Attack_") + WeaponName;
+		const FPixelWeaponDef& W = GetAttackVisualWeapon();
+		const float T = GetAttackVisualTime();
+		const float StrikeEnd = W.Windup + W.ActiveTime;
+		const float Frame = T < W.Windup ? FMath::GetMappedRangeValueClamped(FVector2f(0.f, W.Windup), FVector2f(0.f, 6.f), T)
+			: T < StrikeEnd ? FMath::GetMappedRangeValueClamped(FVector2f(W.Windup, StrikeEnd), FVector2f(6.f, 10.f), T)
+			: FMath::GetMappedRangeValueClamped(FVector2f(StrikeEnd, W.TotalTime()), FVector2f(10.f, 20.f), T);
+		Time = Frame / 24.f;
+	}
+	else if (GetWalkTime() > 0.f)
+	{
+		Name = TEXT("Run_") + WeaponName;
+		Time = GetWalkTime();
+	}
+	else
+	{
+		Name = TEXT("Idle_") + WeaponName;
+		Time = GetAnimTime();
+	}
+
+	UAnimSequence* Anim = FindAnim(Name);
+	if (!Anim)
+	{
+		return;
+	}
+	const float Length = Anim->GetPlayLength();
+	Time = Alpha >= 0.f ? FMath::Clamp(Alpha, 0.f, 1.f) * Length : (Name.StartsWith(TEXT("Idle")) || Name.StartsWith(TEXT("Run")) ? FMath::Fmod(Time, Length) : FMath::Min(Time, Length));
+	if (AnimFrameRate > 0.f)
+	{
+		Time = FMath::Min(FMath::FloorToFloat(Time * AnimFrameRate + 0.001f) / AnimFrameRate, Length);
+	}
+	if (Anim != ShownAnim)
+	{
+		BodySkeleton->SetAnimation(Anim);
+		BodySkeleton->SetPlayRate(0.f); // the frame is set below, every tick
+		ShownAnim = Anim;
+	}
+	BodySkeleton->SetPosition(Time, false);
 }
 
 bool APixelPlayerCharacter::IsWeaponAvailable(int32 Index) const
@@ -439,6 +552,7 @@ void APixelPlayerCharacter::RestoreFromSave(const FVector& Location, float Healt
 void APixelPlayerCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	UpdateBodyAnimation();
 
 	if (IsDead() || !CameraRig)
 	{

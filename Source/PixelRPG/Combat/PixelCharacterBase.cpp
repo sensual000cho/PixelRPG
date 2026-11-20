@@ -281,7 +281,7 @@ void APixelCharacterBase::UpdateVisuals(float DeltaSeconds)
 	// --- Body: hop while walking, squash while dashing / telegraphing, shrink when dead ---
 	const bool bWalking = GetVelocity().SizeSquared2D() > FMath::Square(30.f) && GetCharacterMovement()->IsMovingOnGround();
 	WalkTime = bWalking ? WalkTime + DeltaSeconds : 0.f;
-	const float Hop = bWalking ? FMath::Abs(FMath::Sin(WalkTime * 11.f)) : 0.f;
+	const float Hop = bWalking && bHopWhileWalking ? FMath::Abs(FMath::Sin(WalkTime * 11.f)) : 0.f;
 	const float Squash = FMath::Clamp(ExtraSquash + (DashTimeLeft > 0.f ? 0.35f : 0.f), 0.f, 1.f);
 
 	float DeathScale = 1.f;
