@@ -96,6 +96,13 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Pixel")
 	float CharacterTexelSize = 3.4f;
 
+	/**
+	 * Characters are lit as if the sun always came from this yaw relative to the camera (degrees; the direction
+	 * the light travels, +40 = from behind the camera's left), so their shading stays put when the camera orbits.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Pixel")
+	float CharacterLightYaw = 40.f;
+
 	/** World units covered by TargetPixelHeight pixels. Defines the size of one pixel in the world. */
 	UPROPERTY(EditAnywhere, Category = "Pixel")
 	float ViewHeightWorldUnits = 1080.f;
@@ -134,6 +141,10 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> PostMaterial;
+
+	/** The level's sun (the first directional light), for the camera-relative character lighting. */
+	TWeakObjectPtr<class ADirectionalLight> Sun;
+	bool bLookedForSun = false;
 
 	FVector ViewForward = FVector::ForwardVector;
 	float TanHalfFov = 0.f;

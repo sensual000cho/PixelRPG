@@ -5,6 +5,7 @@
 #include "World/PixelInteractable.h"
 
 #include "Components/SceneCaptureComponent2D.h"
+#include "Engine/DirectionalLight.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/GameViewportClient.h"
@@ -218,9 +219,35 @@ void APixelCameraRig::UpdateAutomation(float DeltaSeconds)
 		bParsed = true;
 		FParse::Value(FCommandLine::Get(), TEXT("PixelShot="), ShotDelay);
 	}
+	// "-PixelShotFrames=<n>" also saves the next n captured frames as Saved/FlickerFrames/Frame_NN.png, to check
+	// frame-to-frame flicker of the pixel effect.
+	static int32 FramesWanted = 0;
+	static int32 FramesSaved = 0;
+	if (ShotDelay > 0.f && FramesWanted == 0)
+	{
+		FParse::Value(FCommandLine::Get(), TEXT("PixelShotFrames="), FramesWanted);
+		FramesWanted = FMath::Max(FramesWanted, -1);
+	}
+	// "-PixelOrbit=<degrees per second>": turns the camera on its own from half a second before the shot, to check
+	// how much the characters change while the camera orbits (with -PixelShotFrames).
+	static float OrbitSpeed = 0.f;
+	if (ShotDelay > 0.f && OrbitSpeed == 0.f)
+	{
+		FParse::Value(FCommandLine::Get(), TEXT("PixelOrbit="), OrbitSpeed);
+		OrbitSpeed = OrbitSpeed == 0.f ? 1e-6f : OrbitSpeed;
+	}
+	if (ShotDelay > 0.f && FMath::Abs(OrbitSpeed) > 1e-3f && Elapsed >= ShotDelay - 0.5f)
+	{
+		AddLookInput(OrbitSpeed * DeltaSeconds, 0.f);
+	}
 	if (ShotDelay > 0.f)
 	{
 		Elapsed += DeltaSeconds;
+		if (bShotTaken && FramesSaved < FramesWanted)
+		{
+			UKismetRenderingLibrary::ExportRenderTarget(this, RenderTarget, FPaths::ProjectSavedDir() / TEXT("FlickerFrames"),
+				FString::Printf(TEXT("Frame_%02d.png"), FramesSaved++));
+		}
 		if (!bShotTaken && Elapsed >= ShotDelay)
 		{
 			bShotTaken = true;
@@ -387,8 +414,23 @@ void APixelCameraRig::UpdateCharacterPixels()
 		return;
 	}
 
+	// Camera-relative lighting (see CHARACTER_NORMAL_CODE in Tools/setup_pixel_assets.py): how far to turn the
+	// characters' normals so the sun reaches them from CharacterLightYaw relative to the camera.
+	if (!bLookedForSun)
+	{
+		bLookedForSun = true;
+		for (TActorIterator<ADirectionalLight> It(GetWorld()); It; ++It)
+		{
+			Sun = *It;
+			break;
+		}
+	}
+	const float LightTurn = Sun.IsValid()
+		? FMath::DegreesToRadians(FMath::FindDeltaAngleDegrees(CurrentYaw + CharacterLightYaw, Sun->GetActorForwardVector().Rotation().Yaw))
+		: 0.f;
+
 	int32 Slot = 0;
-	auto Assign = [this, &Slot](AActor* Actor, FVector Feet)
+	auto Assign = [this, &Slot, LightTurn](AActor* Actor, FVector Feet)
 	{
 		if (Slot >= MaxSlots)
 		{
@@ -403,10 +445,17 @@ void APixelCameraRig::UpdateCharacterPixels()
 		float Size = 0.f;
 		FVector2D Pixel = FVector2D::ZeroVector;
 		const double Depth = FVector::DotProduct(Feet - CaptureLocation, ViewForward);
+		// Pixel snap (see FLATTEN_CODE in Tools/setup_pixel_assets.py): the model's vertices are snapped to this grid,
+		// in world units, from the world point that lands exactly on the grid's (rounded) anchor pixel.
+		float SnapSize = 0.f;
+		FVector SnapOrigin = Feet;
 		if (bThirdPerson && bPixelEffectEnabled && Depth > 10.0 && WorldToTargetPixel(Feet, Pixel))
 		{
 			const double WorldUnitsPerScreenPixel = Depth * 2.0 * TanHalfFov / RenderTarget->SizeX;
 			Size = FMath::Clamp(FMath::RoundToFloat(CharacterTexelSize / WorldUnitsPerScreenPixel), 1.f, 64.f);
+			SnapSize = Size * WorldUnitsPerScreenPixel;
+			SnapOrigin = Feet + ViewRight * ((FMath::RoundToDouble(Pixel.X) - Pixel.X) * WorldUnitsPerScreenPixel)
+				- ViewUp * ((FMath::RoundToDouble(Pixel.Y) - Pixel.Y) * WorldUnitsPerScreenPixel);
 		}
 
 		TInlineComponentArray<UPrimitiveComponent*> Components(Actor);
@@ -415,6 +464,20 @@ void APixelCameraRig::UpdateCharacterPixels()
 			if (Component->bRenderCustomDepth)
 			{
 				Component->SetCustomDepthStencilValue(Slot + 1);
+				for (int32 Index = 0; Index < Component->GetNumMaterials(); ++Index)
+				{
+					UMaterialInstanceDynamic* Material = Cast<UMaterialInstanceDynamic>(Component->GetMaterial(Index));
+					if (!Material && Component->GetMaterial(Index))
+					{
+						Material = Component->CreateDynamicMaterialInstance(Index);
+					}
+					if (Material)
+					{
+						Material->SetScalarParameterValue(TEXT("SnapSize"), SnapSize);
+						Material->SetScalarParameterValue(TEXT("LightTurn"), LightTurn);
+						Material->SetVectorParameterValue(TEXT("SnapOrigin"), FLinearColor(SnapOrigin.X, SnapOrigin.Y, SnapOrigin.Z, 0.f));
+					}
+				}
 			}
 		}
 		// Whole pixels: every block of the character then covers exactly Size x Size screen pixels.

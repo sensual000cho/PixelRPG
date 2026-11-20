@@ -84,10 +84,14 @@ QUEST_CLEAR = [(0, 0, 1150), (*QUEST_YARD, 650), (*QUEST_GARDEN, 800), (*QUEST_M
 QUEST_CAMP_DISTANCE = 2000.0
 SOURCE_DIR = os.path.join(PROJECT_DIR, "SourceArt")
 
-# Characters are animated like a flip book: one model per pose (see the *_POSES lists in make_assets_blender.py).
+# The hero is a rigged skeletal mesh with keyframed animations (SK_Hero, A_Hero_*), made by
+# Desktop/Project_PixelRPG/Hero/make_hero.py; see import_hero() and HERO_ANIMS.
+HERO_DIR = "/Game/Characters/Hero"
+HERO_ANIMS = [f"{kind}_{weapon}" for weapon in ("Sword", "Spear") for kind in ("Idle", "Run", "Attack", "Dodge", "Hurt")]     + [f"Combo{i}" for i in range(1, 5)]
+# The other characters are animated like a flip book: one model per pose (see the *_POSES lists in make_assets_blender.py).
 # SM_Mushroom_* come from Desktop/Project_PixelRPG/make_mushroom.py, not make_assets_blender.py.
 # SM_RockMonster_* come from Desktop/Project_PixelRPG/RockMonster/make_rock_monster.py (posed from the rigged RockMonster.blend).
-POSE_SETS = {"SM_Hero": 34, "SM_Slime": 7, "SM_Companion": 7, "SM_Villager": 4, "SM_Mushroom": 7, "SM_RockMonster": 7}
+POSE_SETS = {"SM_Slime": 7, "SM_Companion": 7, "SM_Villager": 4, "SM_Mushroom": 7, "SM_RockMonster": 7}
 POSE_MESHES = [f"{prefix}_{i:02d}" for prefix, count in POSE_SETS.items() for i in range(count)]
 # Stand-alone figures (not animated): shown in a row beside the start for now.
 FIGURES = ["SM_Goblin", "SM_Samurai", "SM_Knight", "SM_Mushroom"]
@@ -138,18 +142,39 @@ float CellEdge = 0;
         if (A.z >= 1.5)
         {
             float2 O = A.xy + (floor((P - A.xy) / A.z) + 0.5) * A.z - P;
-            float S = SceneTextureFetchFunc(Parameters, 25, O).r;
-            if (abs(S - Id) < 0.5)
+            // A cell belongs to the character when the character is visible at its centre or, failing that, at one
+            // of four points around it (always tried in the same order, so the choice is stable). Thin parts (a hair
+            // spike) then still become whole blocks instead of smooth full-resolution slivers, and grass that is
+            // dithered away in front of the player (see-through) no longer punches fine stripes into its cells.
+            // Real occluders (a wall) hide all five points, so the cell stays the wall's.
+            float Q = max(floor(A.z * 0.25 + 0.5), 1.0);
+            float2 Taps[5] = { float2(0, 0), float2(-Q, -Q), float2(Q, -Q), float2(-Q, Q), float2(Q, Q) };
+            float Found = 0;
+            float CDc = 0;
+            float2 Hit = O;
+            for (int t = 0; t < 5; t++)
             {
-                float CDc = SceneTextureFetchFunc(Parameters, 13, O).r;
-                float Dc = SceneTextureFetchFunc(Parameters, 1, O).r;
-                // Visible at the cell centre, nothing nearer on this pixel, and the nearest character wins.
-                if (CDc <= Dc + 2.0 && SelfD > CDc - 40.0 && CDc < Best)
+                float2 T = O + Taps[t];
+                if (Found < 0.5 && abs(SceneTextureFetchFunc(Parameters, 25, T).r - Id) < 0.5)
+                {
+                    float CDt = SceneTextureFetchFunc(Parameters, 13, T).r;
+                    if (CDt <= SceneTextureFetchFunc(Parameters, 1, T).r + 2.0)
+                    {
+                        Found = 1;
+                        CDc = CDt;
+                        Hit = T;
+                    }
+                }
+            }
+            if (Found > 0.5)
+            {
+                // The nearest character wins where two overlap.
+                if (CDc < Best)
                 {
                     Best = CDc;
                     BestId = Id;
                     BestSize = A.z;
-                    BestOff = O;
+                    BestOff = Hit;
                 }
             }
             else if (abs(SelfS - Id) < 0.5 && SelfCD <= SelfD + 2.0)
@@ -210,8 +235,15 @@ float3 ShadowTint = float3(0.40, 0.45, 0.62) * ShadowBrightness;
 float3 LitTint = float3(1.00, 0.96, 0.88);
 float3 Out = B * lerp(ShadowTint, LitTint, Band) * View.PreExposure;
 
-// Black pixels along the silhouette of a character (OutlineDarken 0), grey-black inner lines.
-Out = lerp(Out, Out * OutlineDarken, CellEdge);   // CellEdge is 1 on the silhouette, less on inner lines
+// Coloured outline ("sel-out", as in hand-drawn sprites): the silhouette pixel takes a darker, more saturated,
+// slightly cooler shade of its own colour instead of black, so hair gets a dark brown edge, a blue coat a deep navy.
+// Inner lines get part of the way there. CellEdge is 1 on the silhouette, less on inner lines.
+{
+    float3 Dark = Out * OutlineDarken;
+    float DarkLuma = dot(Dark, LumaW);
+    Dark = max(lerp(DarkLuma.xxx, Dark, OutlineSaturation), 0) * float3(0.90, 0.94, 1.10);
+    Out = lerp(Out, Dark, CellEdge);
+}
 
 // --- Fog: haze that softens the distance ---
 float Fog = saturate((D - FogStart) / max(FogEnd - FogStart, 1)) * FogMax;
@@ -258,7 +290,27 @@ FLATTEN_CODE = r"""
 return float3(0, 0, 0);
 #endif
 float3 ToCam = normalize(CamPos - ObjPos);
-return -ToCam * dot(WP - ObjPos, ToCam) * (1.0 - Thickness);
+float3 Flat = -ToCam * dot(WP - ObjPos, ToCam) * (1.0 - Thickness);
+// Pixel snap: in the plane facing the camera, every vertex jumps to the nearest corner of the character's pixel grid
+// (SnapSize world units per big pixel, the grid's origin at SnapOrigin; both set per character every frame by
+// APixelCameraRig). Edges then sit on cell borders and only move a whole pixel at a time, so the cells sampled by
+// the post process stop flickering while the model breathes, walks or turns. SnapSize 0 = off (editor).
+if (SnapSize <= 0)
+{
+    return Flat;
+}
+float3 Right = normalize(cross(float3(0, 0, 1), ToCam));
+float3 Up = cross(ToCam, Right);
+float3 R = WP + Flat - SnapOrigin;
+float X = round(dot(R, Right) / SnapSize) * SnapSize;
+float Y = round(dot(R, Up) / SnapSize) * SnapSize;
+return SnapOrigin + Right * X + Up * Y + ToCam * dot(R, ToCam) - WP;
+"""
+
+CHARACTER_NORMAL_CODE = r"""
+float S = sin(Turn);
+float C = cos(Turn);
+return normalize(float3(C * N.x - S * N.y, S * N.x + C * N.y, N.z));
 """
 
 TERRAIN_CODE = r"""
@@ -392,7 +444,8 @@ def build_post_material():
         ("InnerLine", 0.4),     # inner lines: 40 % of the way to the outline colour
         ("LightMax", 0.85),
         ("ShadowBrightness", 1.0),
-        ("OutlineDarken", 0.0), # silhouette of players, monsters and NPCs: 0 = black
+        ("OutlineDarken", 0.22),    # silhouette of players, monsters and NPCs: their own colour times this (linear)
+        ("OutlineSaturation", 1.5), # and this much more saturated, so the edge stays a colour and not grey
         ("FogStart", 2600.0),   # light haze: starts further out and never swallows the distance completely
         ("FogEnd", 11000.0),
         ("FogMax", 0.6),
@@ -429,6 +482,8 @@ def build_surface_material(name, code, texture, tile_size, strength, local, see_
     With `colour_map` (the landscape) the colour comes from that texture, looked up by world position."""
     mat = create_material(name)
     mat.set_editor_property("used_with_instanced_static_meshes", True)   # foliage instances
+    if flatten:
+        mat.set_editor_property("used_with_skeletal_mesh", True)         # the hero
     inputs = ["VC", "Depth", "Tex", "TileSize", "DetailStrength", "LodScale"] + (["LP", "LN"] if local else ["WP"])
     if colour_map:
         inputs += ["ColTex", "ColHalf", "ColStep"]
@@ -489,14 +544,26 @@ def build_surface_material(name, code, texture, tile_size, strength, local, see_
         connect_see_through_switch(mat, mask, -1000, 1400)
         mel.connect_material_property(mask, "", unreal.MaterialProperty.MP_OPACITY_MASK)
     if flatten:
-        offset = add_custom(mat, "FlattenToCamera", FLATTEN_CODE, ["WP", "ObjPos", "CamPos", "Thickness"], -500, 1200)
+        offset = add_custom(mat, "FlattenToCamera", FLATTEN_CODE, ["WP", "ObjPos", "CamPos", "Thickness", "SnapSize", "SnapOrigin"], -500, 1200)
         rest = mel.create_material_expression(mat, unreal.MaterialExpressionWorldPosition, -1000, 1200)
         rest.set_editor_property("world_position_shader_offset", unreal.WorldPositionIncludedOffsets.WPT_EXCLUDE_ALL_SHADER_OFFSETS)
         mel.connect_material_expressions(rest, "", offset, "WP")
         mel.connect_material_expressions(mel.create_material_expression(mat, unreal.MaterialExpressionObjectPositionWS, -1000, 1320), "", offset, "ObjPos")
         mel.connect_material_expressions(mel.create_material_expression(mat, unreal.MaterialExpressionCameraPositionWS, -1000, 1440), "", offset, "CamPos")
         mel.connect_material_expressions(add_scalar(mat, "Thickness", 0.03, -1000, 1560), "", offset, "Thickness")
+        mel.connect_material_expressions(add_scalar(mat, "SnapSize", 0.0, -1000, 1660), "", offset, "SnapSize")
+        origin = mel.create_material_expression(mat, unreal.MaterialExpressionVectorParameter, -1000, 1760)
+        origin.set_editor_property("parameter_name", "SnapOrigin")
+        mel.connect_material_expressions(origin, "", offset, "SnapOrigin")
         mel.connect_material_property(offset, "", unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
+        # Camera-relative lighting: characters always face the camera the same way (FacingSteps), so the normal used
+        # for lighting is turned about Z by LightTurn (radians, set per character by APixelCameraRig) to keep the sun
+        # at the same angle to the camera. Orbiting the camera then no longer changes a character's shading.
+        mat.set_editor_property("tangent_space_normal", False)
+        turn = add_custom(mat, "CameraRelativeNormal", CHARACTER_NORMAL_CODE, ["N", "Turn"], -500, 1900)
+        mel.connect_material_expressions(mel.create_material_expression(mat, unreal.MaterialExpressionVertexNormalWS, -1000, 1900), "", turn, "N")
+        mel.connect_material_expressions(add_scalar(mat, "LightTurn", 0.0, -1000, 2000), "", turn, "Turn")
+        mel.connect_material_property(turn, "", unreal.MaterialProperty.MP_NORMAL)
     add_matte(mat)
     mel.recompile_material(mat)
     eal.save_loaded_asset(mat)
@@ -591,6 +658,65 @@ def import_meshes(material, character_material, foliage_material, prop_material)
             if isinstance(unreal.load_asset(path), unreal.MaterialInterface):
                 eal.delete_asset(path.split(".")[0])
     return meshes
+
+
+def import_hero(character_material):
+    """SK_Hero (mesh + skeleton) and its animations A_Hero_* (one FBX each) into /Game/Characters/Hero."""
+    def task(name, destination, options):
+        t = unreal.AssetImportTask()
+        t.set_editor_property("filename", os.path.join(SOURCE_DIR, name + ".fbx"))
+        t.set_editor_property("destination_path", destination)
+        t.set_editor_property("destination_name", name)
+        t.set_editor_property("automated", True)
+        t.set_editor_property("replace_existing", True)
+        t.set_editor_property("save", True)
+        t.set_editor_property("options", options)
+        return t
+
+    ui = unreal.FbxImportUI()
+    ui.set_editor_property("import_mesh", True)
+    ui.set_editor_property("import_as_skeletal", True)
+    ui.set_editor_property("import_animations", False)
+    ui.set_editor_property("import_materials", False)
+    ui.set_editor_property("import_textures", False)
+    ui.set_editor_property("create_physics_asset", False)
+    ui.set_editor_property("mesh_type_to_import", unreal.FBXImportType.FBXIT_SKELETAL_MESH)
+    data = ui.get_editor_property("skeletal_mesh_import_data")
+    data.set_editor_property("vertex_color_import_option", unreal.VertexColorImportOption.REPLACE)
+    data.set_editor_property("import_morph_targets", False)
+    asset_tools.import_asset_tasks([task("SK_Hero", HERO_DIR, ui)])
+    mesh = unreal.load_asset(f"{HERO_DIR}/SK_Hero.SK_Hero")
+    if not mesh:
+        raise RuntimeError("import failed: SK_Hero")
+    # New slot structs: editing the ones get_editor_property hands back does not reach the mesh.
+    slots = [unreal.SkeletalMaterial(material_interface=character_material,
+                                     material_slot_name=slot.get_editor_property("material_slot_name"))
+             for slot in mesh.get_editor_property("materials")]
+    mesh.set_editor_property("materials", slots)
+    eal.save_loaded_asset(mesh)
+    skeleton = mesh.get_editor_property("skeleton")
+
+    tasks = []
+    for anim in HERO_ANIMS:
+        ui = unreal.FbxImportUI()
+        ui.set_editor_property("import_mesh", False)
+        ui.set_editor_property("import_as_skeletal", True)
+        ui.set_editor_property("import_animations", True)
+        ui.set_editor_property("import_materials", False)
+        ui.set_editor_property("import_textures", False)
+        ui.set_editor_property("skeleton", skeleton)
+        ui.set_editor_property("mesh_type_to_import", unreal.FBXImportType.FBXIT_ANIMATION)
+        anim_data = ui.get_editor_property("anim_sequence_import_data")
+        anim_data.set_editor_property("animation_length", unreal.FBXAnimationLengthImportType.FBXALIT_EXPORTED_TIME)
+        anim_data.set_editor_property("import_bone_tracks", True)
+        tasks.append(task(f"A_Hero_{anim}", f"{HERO_DIR}/Anims", ui))
+    asset_tools.import_asset_tasks(tasks)
+    for anim in HERO_ANIMS:
+        sequence = unreal.load_asset(f"{HERO_DIR}/Anims/A_Hero_{anim}.A_Hero_{anim}")
+        if not sequence:
+            raise RuntimeError(f"import failed: A_Hero_{anim}")
+    box = mesh.get_bounds().box_extent
+    unreal.log(f"PixelRPG: SK_Hero extent {box.x:.0f} x {box.y:.0f} x {box.z:.0f}, {len(HERO_ANIMS)} animations")
 
 
 def place_quest_content(world, actor_sub, meshes, spawn, ground):
@@ -951,6 +1077,7 @@ def main():
     build_zone_material()
     ground = build_surface_material("M_Terrain", TERRAIN_CODE, textures["T_Ground"], 256.0, 1.0, local=False, colour_map=textures["T_TerrainColor"])
     meshes = import_meshes(surface, character, build_foliage_material(textures["T_Foliage"]), prop)
+    import_hero(character)
     build_level(meshes, ground)
     remove_legacy_dirs()
     unreal.log("PixelRPG: asset setup finished")
